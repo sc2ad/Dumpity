@@ -87,6 +87,12 @@ namespace DumpityDummyDLL
             return ReadPrefixedList<T>(action).ToArray();
         }
 
+        public T[] ReadPrefixedArray<T>()
+        {
+            return ReadPrefixedArray<T>(r => (T)typeof(T).GetMethod(Constants.ReadMethodName,
+                System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.Public).Invoke(null, new object[] { r, 0 }));
+        }
+
         public bool ReadAllZeros(int len)
         {
             byte[] padding = ReadBytes(len);

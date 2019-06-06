@@ -109,11 +109,25 @@ namespace DumpityLibrary
             worker.Append(worker.Create(OpCodes.Stfld, f));
         }
 
+        public class A
+        {
+            public AssetPtr[] a;
+        }
+
         public static void WriteReadClassArray(ILProcessor worker, MethodDefinition method, FieldDefinition f, TypeDefinition t, MethodDefinition read)
         {
+            var m = f.Module.ImportReference(ReaderType.GetMethod("ReadPrefixedArray", Type.EmptyTypes));
+            
             // Write the read object line
-            var callCode = worker.Create(OpCodes.Call, f.Module.ImportReference(read));
+            var callCode = worker.Create(OpCodes.Call, m.MakeGeneric(t));
             // Duplicate the reference
+            worker.Append(worker.Create(OpCodes.Dup));
+            // Put the reader onto the stack
+            worker.Append(worker.Create(OpCodes.Ldarg, method.Parameters[0]));
+            // Call ReadPrefixedArray()
+            worker.Append(callCode);
+            // Set the field
+            worker.Append(worker.Create(OpCodes.Stfld, f));
             //worker.Append(worker.Create(OpCodes.Dup));
         }
 
@@ -166,7 +180,6 @@ namespace DumpityLibrary
                         // Call the object's ReadFrom method for each item
                         Console.WriteLine($"Writing {t.Name} as an Object to read/write from!");
                         var readMethod = GenerateReadMethod(FindSerializedData(t), t);
-                        Console.WriteLine($"ReadMethod to be used in array: {readMethod}");
                         WriteReadClassArray(worker, method, f, t, readMethod);
                         //worker.Append(worker.Create(OpCodes.Dup));
                         //worker.Append(worker.Create())
