@@ -16,17 +16,12 @@
     </PackageReference>
     <PackageReference Include="Janitor.Fody" Version="1.6.8" />
     <PackageReference Include="MethodDecorator.Fody" Version="1.0.2" />
+    <PackageReference Include="Mono.Cecil" Version="0.10.4" />
     <PackageReference Include="Virtuosity.Fody" Version="3.0.0" />
   </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\DumpityDummyDLL\DumpityDummyDLL.csproj" />
-  </ItemGroup>
-
-  <ItemGroup>
-    <Reference Include="Mono.Cecil">
-      <HintPath>..\..\Il2CppDumper\Il2CppDumper\Mono.Cecil.dll</HintPath>
-    </Reference>
   </ItemGroup>
 
 </Project>

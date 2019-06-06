@@ -16,13 +16,9 @@ namespace DumpityLibrary
         public static Type ReaderType { get; private set; }
         public static Type WriterType { get; private set; }
         public static Type AssetPtrType { get; private set; }
+        public static TypeDefinition SerializeFieldAttr { get; private set; }
 
-        public static List<FieldInfo> FindSerializedData(Type type, Type serializeFieldAttr)
-        {
-            return FindSerializedData(type.GetFields(BindingFlags.NonPublic | BindingFlags.Public), serializeFieldAttr);
-        }
-
-        public static List<FieldDefinition> FindSerializedData(TypeDefinition def, TypeDefinition serializeDef)
+        public static List<FieldDefinition> FindSerializedData(TypeDefinition def)
         {
             // So if it is a monobehaviour, we need to see what gameobject it is on. 
             // We also need to get all of the inherited fields/properties in the right order to save em.
@@ -32,8 +28,8 @@ namespace DumpityLibrary
                 Console.WriteLine($"Trying Field: {f}");
                 foreach (var atr in f.CustomAttributes)
                 {
-                    Console.WriteLine($"Custom Attribute: {atr.AttributeType.FullName} compared to {serializeDef.FullName}");
-                    if (atr.AttributeType.FullName.Equals(serializeDef.FullName))
+                    Console.WriteLine($"Custom Attribute: {atr.AttributeType.FullName} compared to {SerializeFieldAttr.FullName}");
+                    if (atr.AttributeType.FullName.Equals(SerializeFieldAttr.FullName))
                     {
                         Console.WriteLine("Serializable field!");
                         fields.Add(f);
@@ -41,19 +37,6 @@ namespace DumpityLibrary
                 }
             }
             return fields;
-        }
-
-        public static List<FieldInfo> FindSerializedData(FieldInfo[] fields, Type serializeFieldAttr)
-        {
-            var o = new List<FieldInfo>();
-            foreach (FieldInfo i in fields)
-            {
-                if (i.GetCustomAttribute(serializeFieldAttr) != null)
-                {
-                    o.Add(i);
-                }
-            }
-            return o;
         }
 
         public static bool IsSerializable(TypeDefinition t)
@@ -84,7 +67,7 @@ namespace DumpityLibrary
         public static void WriteReadAlignedString(ILProcessor worker, MethodDefinition method, FieldDefinition f)
         {
             // Write the read aligned string line
-            var callCode = worker.Create(OpCodes.Call, f.Module.Import(typeof(CustomBinaryReader).GetMethod("ReadAlignedString")));
+            var callCode = worker.Create(OpCodes.Call, f.Module.ImportReference(typeof(CustomBinaryReader).GetMethod("ReadAlignedString")));
             // Duplicate the reference
             worker.Append(worker.Create(OpCodes.Dup));
             // Put Reader onto stack
@@ -99,7 +82,7 @@ namespace DumpityLibrary
         {
             // ASSUMING THE LOCAL FIELD F IS A POINTER!
             // Write the read aligned string line
-            var callCode = worker.Create(OpCodes.Newobj, f.Module.Import(typeof(AssetPtr).GetConstructor(new Type[] { ReaderType })));
+            var callCode = worker.Create(OpCodes.Newobj, f.Module.ImportReference(typeof(AssetPtr).GetConstructor(new Type[] { ReaderType })));
             // Duplicate the reference
             worker.Append(worker.Create(OpCodes.Dup));
             // Put Reader onto stack
@@ -108,6 +91,30 @@ namespace DumpityLibrary
             worker.Append(callCode);
             // Set the field of the object 
             worker.Append(worker.Create(OpCodes.Stfld, f));
+        }
+
+        public static void WriteReadClass(ILProcessor worker, MethodDefinition method, FieldDefinition f, MethodDefinition read)
+        {
+            // Write the read object line
+            var callCode = worker.Create(OpCodes.Call, f.Module.ImportReference(read));
+            // Duplicate the reference
+            worker.Append(worker.Create(OpCodes.Dup));
+            // Put Reader onto stack
+            worker.Append(worker.Create(OpCodes.Ldarg, method.Parameters[0]));
+            // Put length onto stack
+            worker.Append(worker.Create(OpCodes.Ldc_I4_0));
+            // Call SomeObject.ReadFrom()
+            worker.Append(callCode);
+            // Set the field of the object 
+            worker.Append(worker.Create(OpCodes.Stfld, f));
+        }
+
+        public static void WriteReadClassArray(ILProcessor worker, MethodDefinition method, FieldDefinition f, TypeDefinition t, MethodDefinition read)
+        {
+            // Write the read object line
+            var callCode = worker.Create(OpCodes.Call, f.Module.ImportReference(read));
+            // Duplicate the reference
+            //worker.Append(worker.Create(OpCodes.Dup));
         }
 
         public static void GetReadOther(MethodDefinition method, ILProcessor worker, FieldDefinition f, MetadataType type)
@@ -130,7 +137,9 @@ namespace DumpityLibrary
                         Console.WriteLine($"Serializable class found: {f.FieldType.FullName}");
                         f.IsPublic = true;
                         f.IsPrivate = false;
-
+                        // Create a read method if it doesn't exist already in that class.
+                        var readMethod = GenerateReadMethod(FindSerializedData(f.FieldType.Resolve()), f.FieldType.Resolve());
+                        WriteReadClass(worker, method, f, readMethod);
                     } else
                     {
                         // No custom attributes.
@@ -138,7 +147,7 @@ namespace DumpityLibrary
                         // Need to add a field and make it public here.
                         Console.WriteLine($"Writing {f.Name} as a pointer with attributes: {f.Attributes}!");
                         // Create the public field for the pointer!
-                        var assetF = new FieldDefinition(f.Name + "Ptr", Mono.Cecil.FieldAttributes.Public, f.Module.Import(AssetPtrType));
+                        var assetF = new FieldDefinition(f.Name + "Ptr", Mono.Cecil.FieldAttributes.Public, f.Module.ImportReference(AssetPtrType));
                         f.DeclaringType.Fields.Add(assetF);
                         WriteReadPointer(worker, method, assetF);
                     }
@@ -155,6 +164,10 @@ namespace DumpityLibrary
                     if (IsSerializable(t))
                     {
                         // Call the object's ReadFrom method for each item
+                        Console.WriteLine($"Writing {t.Name} as an Object to read/write from!");
+                        var readMethod = GenerateReadMethod(FindSerializedData(t), t);
+                        Console.WriteLine($"ReadMethod to be used in array: {readMethod}");
+                        WriteReadClassArray(worker, method, f, t, readMethod);
                         //worker.Append(worker.Create(OpCodes.Dup));
                         //worker.Append(worker.Create())
                     } else
@@ -175,12 +188,12 @@ namespace DumpityLibrary
         public static ParameterDefinition GetBinaryReaderParameter(ModuleDefinition def)
         {
             // necessarily custom binary reader!
-            return new ParameterDefinition("reader", Mono.Cecil.ParameterAttributes.None, def.Import(typeof(CustomBinaryReader)));
+            return new ParameterDefinition("reader", Mono.Cecil.ParameterAttributes.None, def.ImportReference(typeof(CustomBinaryReader)));
         }
 
         public static ParameterDefinition GetLengthParameter(ModuleDefinition def)
         {
-            return new ParameterDefinition("length", Mono.Cecil.ParameterAttributes.None, def.Import(typeof(int)));
+            return new ParameterDefinition("length", Mono.Cecil.ParameterAttributes.None, def.ImportReference(typeof(int)));
         }
 
         public static MethodDefinition GetConstructor(TypeDefinition def)
@@ -193,11 +206,18 @@ namespace DumpityLibrary
                 }
             }
             // Need to add a constructor if no constructor can be found without parameters
-            return null;
+            var newConstructor = new MethodDefinition(".ctor", MethodAttributes.Private 
+                | MethodAttributes.SpecialName | MethodAttributes.RTSpecialName 
+                | MethodAttributes.HideBySig, def.Module.TypeSystem.Void);
+            Console.WriteLine($"Is the new method a constructor? {newConstructor.IsConstructor}");
+
+            def.Methods.Add(newConstructor);
+            return newConstructor;
         }
 
         public static MethodDefinition GenerateReadMethod(List<FieldDefinition> fieldsToWrite, TypeDefinition thisType)
         {
+            Console.WriteLine("=================================GENERATING READ METHOD=================================");
             // Reference: https://stackoverflow.com/questions/35948733/mono-cecil-method-and-instruction-insertion
             // Create constructor method:
             MethodDefinition method = new MethodDefinition("ReadFrom",  MethodAttributes.Public | MethodAttributes.Static, thisType);
@@ -218,7 +238,7 @@ namespace DumpityLibrary
                 if (f.FieldType.IsPrimitive)
                 {
                     // Write a primitive read line
-                    var callCode = worker.Create(OpCodes.Callvirt, thisType.Module.Import(GetReadPrimitive(f.FieldType.MetadataType)));
+                    var callCode = worker.Create(OpCodes.Callvirt, thisType.Module.ImportReference(GetReadPrimitive(f.FieldType.MetadataType)));
                     // Duplicate the reference
                     worker.Append(worker.Create(OpCodes.Dup));
                     // Put Reader onto stack
@@ -237,7 +257,8 @@ namespace DumpityLibrary
             }
             worker.Append(worker.Create(OpCodes.Ret));
             Console.WriteLine($"Added: {method} to type: {thisType}");
-            thisType.Resolve();
+            Console.WriteLine("=================================COMPLETED READ METHOD=================================");
+            thisType.Methods.Add(method);
             return method;
         }
 
@@ -260,18 +281,18 @@ namespace DumpityLibrary
 
             ReaderType = typeof(CustomBinaryReader);
             AssetPtrType = typeof(AssetPtr);
+            SerializeFieldAttr = attr;
 
-            List<FieldDefinition> serialized = FindSerializedData(type, attr);
+            List<FieldDefinition> serialized = FindSerializedData(type);
             foreach (var f in serialized)
             {
                 Console.WriteLine($"Serializable Field: {f}");
             }
-
-            type.Methods.Add(GenerateReadMethod(serialized, type));
+            GenerateReadMethod(serialized, type);
             csharpDef.Write("Assembly-CSharp-modified-BeatmapLevelSO.dll");
         }
 
-        public static void WriteWriteToMethod(Type type, Type serializeFieldAttr)
+        public static void WriteWriteToMethod(TypeDefinition type, Type serializeFieldAttr)
         {
             // Somehow need to write the method that matches the AssetParser method, 
             // make it populate the fields that already exist (in the object that is 'type')
@@ -280,7 +301,8 @@ namespace DumpityLibrary
             // For now, let's just create a new type and make it have all of the certain fields,
             // then also have the serialized fields.
             //var fields = type.FindMembers(MemberTypes.All, BindingFlags.Public | BindingFlags.NonPublic, ;
-            var serializedFields = FindSerializedData(type, serializeFieldAttr);
+
+            var serializedFields = FindSerializedData(type);
             // Test
             // Need to do UnityEngine first!
             AssemblyDefinition unityDef = AssemblyDefinition.ReadAssembly("UnityEngine.dll");
