@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Reflection;
 using System.Text;
+using DumpityDummyDLL;
 using Mono.Cecil;
 using Mono.Cecil.Cil;
 using MethodAttributes = Mono.Cecil.MethodAttributes;
@@ -18,6 +19,8 @@ namespace DumpityLibrary
 
         public static List<FieldDefinition> FindSerializedData(TypeDefinition def, TypeDefinition serializeDef)
         {
+            // So if it is a monobehaviour, we need to see what gameobject it is on. 
+            // We also need to get all of the inherited fields/properties in the right order to save em.
             var fields = new List<FieldDefinition>();
             foreach (var f in def.Fields)
             {
@@ -69,7 +72,7 @@ namespace DumpityLibrary
         public static ParameterDefinition GetBinaryReaderParameter(ModuleDefinition def)
         {
             // necessarily custom binary reader!
-            return new ParameterDefinition("reader", Mono.Cecil.ParameterAttributes.None, def.Import(typeof(BinaryReader)));
+            return new ParameterDefinition("reader", Mono.Cecil.ParameterAttributes.None, def.Import(typeof(CustomBinaryReader)));
         }
 
         public static ParameterDefinition GetLengthParameter(ModuleDefinition def)
@@ -77,16 +80,34 @@ namespace DumpityLibrary
             return new ParameterDefinition("length", Mono.Cecil.ParameterAttributes.None, def.Import(typeof(int)));
         }
 
+        public static MethodDefinition GetConstructor(TypeDefinition def)
+        {
+            foreach (var m in def.Methods)
+            {
+                if (m.IsConstructor && !m.HasParameters)
+                {
+                    return m;
+                }
+            }
+            // Need to add a constructor if no constructor can be found without parameters
+            return null;
+        }
+
         public static MethodDefinition GenerateReadMethod(List<FieldDefinition> fieldsToWrite, TypeDefinition thisType)
         {
             // Reference: https://stackoverflow.com/questions/35948733/mono-cecil-method-and-instruction-insertion
             // Create constructor method:
-            MethodDefinition method = new MethodDefinition(".ctor",  MethodAttributes.Public | MethodAttributes.Static, thisType.Module.TypeSystem.Void);
+            MethodDefinition method = new MethodDefinition("ReadFrom",  MethodAttributes.Public | MethodAttributes.Static, thisType);
             // Add parameters
             method.Parameters.Add(GetBinaryReaderParameter(thisType.Module));
             // Shouldn't need length, but just in case?
             method.Parameters.Add(GetLengthParameter(thisType.Module));
             ILProcessor worker = method.Body.GetILProcessor();
+
+
+            var constructor = GetConstructor(thisType);
+            // Create local object
+            worker.Append(worker.Create(OpCodes.Newobj, constructor));
 
             foreach (var f in fieldsToWrite)
             {
@@ -95,12 +116,12 @@ namespace DumpityLibrary
                 {
                     // Write a primitive read line
                     var callCode = worker.Create(OpCodes.Call, thisType.Module.Import(GetReadPrimitive(f.FieldType.FullName)));
+                    // Duplicate the reference
+                    worker.Append(worker.Create(OpCodes.Dup));
                     // Put Reader onto stack
                     worker.Append(worker.Create(OpCodes.Ldarg, method.Parameters[0]));
                     // Call reader.ReadSOMEPRIMITIVE
                     worker.Append(callCode);
-                    // Get "this"
-                    worker.Append(worker.Create(OpCodes.Ldarg_0));
                     // Set the field of the object 
                     worker.Append(inst);
                 } else
@@ -110,6 +131,7 @@ namespace DumpityLibrary
             }
             worker.Append(worker.Create(OpCodes.Ret));
             Console.WriteLine($"Added: {method} to type: {thisType}");
+            thisType.Resolve();
             return method;
         }
 

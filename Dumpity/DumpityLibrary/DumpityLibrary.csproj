@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <TargetFramework>netstandard2.0</TargetFramework>
@@ -17,6 +17,10 @@
     <PackageReference Include="Janitor.Fody" Version="1.6.8" />
     <PackageReference Include="MethodDecorator.Fody" Version="1.0.2" />
     <PackageReference Include="Virtuosity.Fody" Version="3.0.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\DumpityDummyDLL\DumpityDummyDLL.csproj" />
   </ItemGroup>
 
   <ItemGroup>
