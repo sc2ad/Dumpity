@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Reflection;
 using System.Text;
 using DumpityDummyDLL;
@@ -12,6 +13,10 @@ namespace DumpityLibrary
 {
     public class GenerateAssetParsers
     {
+        public static Type ReaderType { get; private set; }
+        public static Type WriterType { get; private set; }
+        public static Type AssetPtrType { get; private set; }
+
         public static List<FieldInfo> FindSerializedData(Type type, Type serializeFieldAttr)
         {
             return FindSerializedData(type.GetFields(BindingFlags.NonPublic | BindingFlags.Public), serializeFieldAttr);
@@ -51,22 +56,120 @@ namespace DumpityLibrary
             return o;
         }
 
-        public static MethodInfo GetReadPrimitive(string name)
+        public static bool IsSerializable(TypeDefinition t)
+        {
+            // It contains attributes, also needs to contain Serailizable
+            // Possibly only needs to be within the same assembly to serialize? Not sure yet.
+            var cs = t.Attributes;
+            if (!cs.HasFlag(Mono.Cecil.TypeAttributes.Serializable)) return false;
+            Console.WriteLine(cs);
+            return true;
+        }
+
+        public static MethodInfo GetReadPrimitive(MetadataType type)
         {
             string methodName = "";
-            switch (name)
+            switch (type)
             {
-                case "System.Single":
+                case MetadataType.Single:
                     methodName = "ReadSingle";
                     break;
-                case "System.Int32":
+                case MetadataType.Int32:
                     methodName = "ReadInt32";
                     break;
-                case "System.String":
-                    methodName = "ReadAlignedString";
+            }
+            return ReaderType.GetMethod(methodName);
+        }
+
+        public static void WriteReadAlignedString(ILProcessor worker, MethodDefinition method, FieldDefinition f)
+        {
+            // Write the read aligned string line
+            var callCode = worker.Create(OpCodes.Call, f.Module.Import(typeof(CustomBinaryReader).GetMethod("ReadAlignedString")));
+            // Duplicate the reference
+            worker.Append(worker.Create(OpCodes.Dup));
+            // Put Reader onto stack
+            worker.Append(worker.Create(OpCodes.Ldarg, method.Parameters[0]));
+            // Call reader.ReadAlignedString
+            worker.Append(callCode);
+            // Set the field of the object 
+            worker.Append(worker.Create(OpCodes.Stfld, f));
+        }
+
+        public static void WriteReadPointer(ILProcessor worker, MethodDefinition method, FieldDefinition f)
+        {
+            // ASSUMING THE LOCAL FIELD F IS A POINTER!
+            // Write the read aligned string line
+            var callCode = worker.Create(OpCodes.Newobj, f.Module.Import(typeof(AssetPtr).GetConstructor(new Type[] { ReaderType })));
+            // Duplicate the reference
+            worker.Append(worker.Create(OpCodes.Dup));
+            // Put Reader onto stack
+            worker.Append(worker.Create(OpCodes.Ldarg, method.Parameters[0]));
+            // Call reader.ReadAlignedString
+            worker.Append(callCode);
+            // Set the field of the object 
+            worker.Append(worker.Create(OpCodes.Stfld, f));
+        }
+
+        public static void GetReadOther(MethodDefinition method, ILProcessor worker, FieldDefinition f, MetadataType type)
+        {
+            // If the value is a string, class; we need to read it right away.
+            // String = AlignedString (most of the time? Always? Not sure)
+            // Class = Pointer, ONLY WHEN THE CLASS DOES NOT HAVE SERIALIZABLE ATTRIBUTE
+            switch (type)
+            {
+                case MetadataType.String:
+                    Console.WriteLine($"Writing {f.Name} as aligned string");
+                    WriteReadAlignedString(worker, method, f);
+                    f.IsPublic = true;
+                    f.IsPrivate = false;
+                    break;
+                case MetadataType.Class:
+                    Console.WriteLine($"{f.FieldType.FullName} is the type of field: {f.Name}");
+                    if (IsSerializable(f.FieldType.Resolve()))
+                    {
+                        Console.WriteLine($"Serializable class found: {f.FieldType.FullName}");
+                        f.IsPublic = true;
+                        f.IsPrivate = false;
+
+                    } else
+                    {
+                        // No custom attributes.
+                        // This should be a pointer.
+                        // Need to add a field and make it public here.
+                        Console.WriteLine($"Writing {f.Name} as a pointer with attributes: {f.Attributes}!");
+                        // Create the public field for the pointer!
+                        var assetF = new FieldDefinition(f.Name + "Ptr", Mono.Cecil.FieldAttributes.Public, f.Module.Import(AssetPtrType));
+                        f.DeclaringType.Fields.Add(assetF);
+                        WriteReadPointer(worker, method, assetF);
+                    }
+                    break;
+                case MetadataType.Array:
+                    var t = f.FieldType.Resolve().GetElementType().Resolve();
+                    Console.WriteLine($"{t.FullName} is the type in the array at field: {f.Name}");
+                    f.IsPublic = true;
+                    f.IsPrivate = false;
+                    // Need to now recursively call this function, except on the TypeDefinition for the new classes.
+
+                    // If the type is a serializable class, then we already wrote (or will write) a method for it.
+
+                    if (IsSerializable(t))
+                    {
+                        // Call the object's ReadFrom method for each item
+                        //worker.Append(worker.Create(OpCodes.Dup));
+                        //worker.Append(worker.Create())
+                    } else
+                    {
+                        // Otherwise, read a pointer for each item.
+                        Console.WriteLine($"Writing {t.Name} as a pointer!");
+                    }
+
                     break;
             }
-            return typeof(BinaryReader).GetMethod(methodName);
+        }
+
+        public static MethodInfo GetReadPointer()
+        {
+            return ReaderType.GetMethod("");
         }
 
         public static ParameterDefinition GetBinaryReaderParameter(ModuleDefinition def)
@@ -104,10 +207,10 @@ namespace DumpityLibrary
             method.Parameters.Add(GetLengthParameter(thisType.Module));
             ILProcessor worker = method.Body.GetILProcessor();
 
-
             var constructor = GetConstructor(thisType);
             // Create local object
             worker.Append(worker.Create(OpCodes.Newobj, constructor));
+
 
             foreach (var f in fieldsToWrite)
             {
@@ -115,7 +218,7 @@ namespace DumpityLibrary
                 if (f.FieldType.IsPrimitive)
                 {
                     // Write a primitive read line
-                    var callCode = worker.Create(OpCodes.Call, thisType.Module.Import(GetReadPrimitive(f.FieldType.FullName)));
+                    var callCode = worker.Create(OpCodes.Callvirt, thisType.Module.Import(GetReadPrimitive(f.FieldType.MetadataType)));
                     // Duplicate the reference
                     worker.Append(worker.Create(OpCodes.Dup));
                     // Put Reader onto stack
@@ -124,9 +227,12 @@ namespace DumpityLibrary
                     worker.Append(callCode);
                     // Set the field of the object 
                     worker.Append(inst);
+                    Console.WriteLine($"{f.Name} is a primitive field with type: {f.FieldType}");
+                    f.IsPublic = true;
+                    f.IsPrivate = false;
                 } else
                 {
-                    //TODO Handle writing non-primitives
+                    GetReadOther(method, worker, f, f.FieldType.MetadataType);
                 }
             }
             worker.Append(worker.Create(OpCodes.Ret));
@@ -151,6 +257,9 @@ namespace DumpityLibrary
                     //Console.WriteLine($"Found TypeDefinition: {t}");
                 }
             }
+
+            ReaderType = typeof(CustomBinaryReader);
+            AssetPtrType = typeof(AssetPtr);
 
             List<FieldDefinition> serialized = FindSerializedData(type, attr);
             foreach (var f in serialized)

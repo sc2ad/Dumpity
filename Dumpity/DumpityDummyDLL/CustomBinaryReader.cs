@@ -71,7 +71,7 @@ namespace DumpityDummyDLL
             return bytes;
         }
 
-        public List<T> ReadPrefixedList<T>(Func<BinaryReader, T> del)
+        public List<T> ReadPrefixedList<T>(Func<CustomBinaryReader, T> del)
         {
             int length = ReadInt32();
             var list = new List<T>(length);
@@ -80,6 +80,11 @@ namespace DumpityDummyDLL
                 list.Add(del(this));
             }
             return list;
+        }
+
+        public T[] ReadPrefixedArray<T>(Func<CustomBinaryReader, T> action)
+        {
+            return ReadPrefixedList<T>(action).ToArray();
         }
 
         public bool ReadAllZeros(int len)
