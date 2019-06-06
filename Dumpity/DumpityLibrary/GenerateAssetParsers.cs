@@ -25,13 +25,13 @@ namespace DumpityLibrary
             var fields = new List<FieldDefinition>();
             foreach (var f in def.Fields)
             {
-                Console.WriteLine($"Trying Field: {f}");
+                //Console.WriteLine($"Trying Field: {f}");
                 foreach (var atr in f.CustomAttributes)
                 {
-                    Console.WriteLine($"Custom Attribute: {atr.AttributeType.FullName} compared to {SerializeFieldAttr.FullName}");
+                    //Console.WriteLine($"Custom Attribute: {atr.AttributeType.FullName} compared to {SerializeFieldAttr.FullName}");
                     if (atr.AttributeType.FullName.Equals(SerializeFieldAttr.FullName))
                     {
-                        Console.WriteLine("Serializable field!");
+                        Console.WriteLine($"{f.Name} has type: {f.FieldType} and MetadataType: {f.FieldType.MetadataType}");
                         fields.Add(f);
                     }
                 }
@@ -43,10 +43,7 @@ namespace DumpityLibrary
         {
             // It contains attributes, also needs to contain Serailizable
             // Possibly only needs to be within the same assembly to serialize? Not sure yet.
-            var cs = t.Attributes;
-            if (!cs.HasFlag(Mono.Cecil.TypeAttributes.Serializable)) return false;
-            Console.WriteLine(cs);
-            return true;
+            return t.IsSerializable;
         }
 
         public static MethodInfo GetReadPrimitive(MetadataType type)
@@ -62,6 +59,23 @@ namespace DumpityLibrary
                     break;
             }
             return ReaderType.GetMethod(methodName);
+        }
+
+        public static void WriteReadPrimitive(ILProcessor worker, MethodDefinition method, TypeDefinition thisType, FieldDefinition f)
+        {
+            // Write a primitive read line
+            var callCode = worker.Create(OpCodes.Callvirt, thisType.Module.ImportReference(GetReadPrimitive(f.FieldType.MetadataType)));
+            // Duplicate the reference
+            worker.Append(worker.Create(OpCodes.Dup));
+            // Put Reader onto stack
+            worker.Append(worker.Create(OpCodes.Ldarg, method.Parameters[0]));
+            // Call reader.ReadSOMEPRIMITIVE
+            worker.Append(callCode);
+            // Set the field of the object 
+            worker.Append(worker.Create(OpCodes.Stfld, f));
+            Console.WriteLine($"Writing {f.Name} as {f.FieldType}");
+            f.IsPublic = true;
+            f.IsPrivate = false;
         }
 
         public static void WriteReadAlignedString(ILProcessor worker, MethodDefinition method, FieldDefinition f)
@@ -131,11 +145,12 @@ namespace DumpityLibrary
             //worker.Append(worker.Create(OpCodes.Dup));
         }
 
-        public static void GetReadOther(MethodDefinition method, ILProcessor worker, FieldDefinition f, MetadataType type)
+        public static void WriteReadOther(ILProcessor worker, MethodDefinition method, FieldDefinition f)
         {
             // If the value is a string, class; we need to read it right away.
             // String = AlignedString (most of the time? Always? Not sure)
             // Class = Pointer, ONLY WHEN THE CLASS DOES NOT HAVE SERIALIZABLE ATTRIBUTE
+            var type = f.FieldType.MetadataType;
             switch (type)
             {
                 case MetadataType.String:
@@ -143,6 +158,25 @@ namespace DumpityLibrary
                     WriteReadAlignedString(worker, method, f);
                     f.IsPublic = true;
                     f.IsPrivate = false;
+                    break;
+                case MetadataType.ValueType:
+                    // Structs are always serialized
+                    Console.WriteLine($"Writing {f.Name} as struct with type: {f.FieldType}");
+                    f.IsPublic = true;
+                    f.IsPrivate = false;
+                    foreach (var field in f.FieldType.Resolve().Fields)
+                    {
+                        if (field.FieldType.IsPrimitive)
+                        {
+                            // Read Primitive
+                            WriteReadStructPrimitive(worker, method, f.DeclaringType, field);
+                        } else
+                        {
+                            // Read Class
+                            //WriteReadOther(worker, method, f.DeclaringType, field);
+                            throw new Exception("Struct with class!");
+                        }
+                    }
                     break;
                 case MetadataType.Class:
                     Console.WriteLine($"{f.FieldType.FullName} is the type of field: {f.Name}");
@@ -159,7 +193,7 @@ namespace DumpityLibrary
                         // No custom attributes.
                         // This should be a pointer.
                         // Need to add a field and make it public here.
-                        Console.WriteLine($"Writing {f.Name} as a pointer with attributes: {f.Attributes}!");
+                        Console.WriteLine($"Writing {f.Name} as a pointer with attributes: {f.Attributes}");
                         // Create the public field for the pointer!
                         var assetF = new FieldDefinition(f.Name + "Ptr", Mono.Cecil.FieldAttributes.Public, f.Module.ImportReference(AssetPtrType));
                         f.DeclaringType.Fields.Add(assetF);
@@ -180,6 +214,7 @@ namespace DumpityLibrary
                         // Call the object's ReadFrom method for each item
                         Console.WriteLine($"Writing {t.Name} as an Object to read/write from!");
                         var readMethod = GenerateReadMethod(FindSerializedData(t), t);
+                        Console.WriteLine($"Writing {f.Name} as an Array of {t.Name}");
                         WriteReadClassArray(worker, method, f, t, readMethod);
                         //worker.Append(worker.Create(OpCodes.Dup));
                         //worker.Append(worker.Create())
@@ -230,6 +265,12 @@ namespace DumpityLibrary
 
         public static MethodDefinition GenerateReadMethod(List<FieldDefinition> fieldsToWrite, TypeDefinition thisType)
         {
+            if (thisType.Methods.Any(item => item.Name == "ReadFrom" && item.IsStatic))
+            {
+                // Method already exists, don't make a new one.
+                Console.WriteLine("ReadFrom method already exists!");
+                return thisType.Methods.ToList().Find(item => item.Name == "ReadFrom" && item.IsStatic);
+            }
             Console.WriteLine("=================================GENERATING READ METHOD=================================");
             // Reference: https://stackoverflow.com/questions/35948733/mono-cecil-method-and-instruction-insertion
             // Create constructor method:
@@ -247,25 +288,12 @@ namespace DumpityLibrary
 
             foreach (var f in fieldsToWrite)
             {
-                var inst = worker.Create(OpCodes.Stfld, f);
                 if (f.FieldType.IsPrimitive)
                 {
-                    // Write a primitive read line
-                    var callCode = worker.Create(OpCodes.Callvirt, thisType.Module.ImportReference(GetReadPrimitive(f.FieldType.MetadataType)));
-                    // Duplicate the reference
-                    worker.Append(worker.Create(OpCodes.Dup));
-                    // Put Reader onto stack
-                    worker.Append(worker.Create(OpCodes.Ldarg, method.Parameters[0]));
-                    // Call reader.ReadSOMEPRIMITIVE
-                    worker.Append(callCode);
-                    // Set the field of the object 
-                    worker.Append(inst);
-                    Console.WriteLine($"{f.Name} is a primitive field with type: {f.FieldType}");
-                    f.IsPublic = true;
-                    f.IsPrivate = false;
+                    WriteReadPrimitive(worker, method, thisType, f);
                 } else
                 {
-                    GetReadOther(method, worker, f, f.FieldType.MetadataType);
+                    WriteReadOther(worker, method, f);
                 }
             }
             worker.Append(worker.Create(OpCodes.Ret));
@@ -279,7 +307,7 @@ namespace DumpityLibrary
         {
             AssemblyDefinition csharpDef = AssemblyDefinition.ReadAssembly("Assembly-CSharp.dll");
             var type = csharpDef.MainModule.GetType("BeatmapLevelSO");
-            Console.WriteLine(type);
+            var simpleColor = csharpDef.MainModule.GetType("SimpleColorSO");
             AssemblyDefinition unityDef = AssemblyDefinition.ReadAssembly("UnityEngine.CoreModule.dll");
             var attr = unityDef.MainModule.GetType("UnityEngine.SerializeField");
             Console.WriteLine($"Serialize Field: {attr}");
@@ -302,6 +330,7 @@ namespace DumpityLibrary
                 Console.WriteLine($"Serializable Field: {f}");
             }
             GenerateReadMethod(serialized, type);
+            GenerateReadMethod(FindSerializedData(simpleColor), simpleColor);
             csharpDef.Write("Assembly-CSharp-modified-BeatmapLevelSO.dll");
         }
 
