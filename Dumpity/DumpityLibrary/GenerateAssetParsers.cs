@@ -322,10 +322,14 @@ namespace DumpityLibrary
                 }
             }
             // Need to add a constructor if no constructor can be found without parameters
-            var newConstructor = new MethodDefinition(".ctor", MethodAttributes.Private 
-                | MethodAttributes.SpecialName | MethodAttributes.RTSpecialName 
-                | MethodAttributes.HideBySig, def.Module.TypeSystem.Void);
+            
+            var newConstructor = new MethodDefinition(".ctor", MethodAttributes.Public 
+                | MethodAttributes.SpecialName | MethodAttributes.RTSpecialName, def.Module.TypeSystem.Void);
             Console.WriteLine($"Is the new method a constructor? {newConstructor.IsConstructor}");
+
+            //newConstructor.Body.Instructions.Add(Instruction.Create(OpCodes.Ldarg_0));
+            //newConstructor.Body.Instructions.Add(Instruction.Create(OpCodes.Nop));
+            newConstructor.Body.Instructions.Add(Instruction.Create(OpCodes.Ret));
 
             def.Methods.Add(newConstructor);
             return newConstructor;
@@ -378,6 +382,23 @@ namespace DumpityLibrary
             Console.WriteLine($"Serialize Field: {attr}");
 
             AssemblyDefinition csharpDef = AssemblyDefinition.ReadAssembly("Assembly-CSharp.dll");
+            var stringType = csharpDef.MainModule.TypeSystem.String;
+            var resolver = new CustomAssemblyResolver();
+            var moduleParameters = new ModuleParameters
+            {
+                Kind = ModuleKind.Dll,
+                AssemblyResolver = resolver
+            };
+            ReaderType = typeof(CustomBinaryReader);
+            AssetPtrType = typeof(AssetPtr);
+            SerializeFieldAttr = attr;
+
+            var newName = new AssemblyNameDefinition("Assembly-CSharp-modified", new Version("1.0.0"));
+            AssemblyDefinition output = AssemblyDefinition.CreateAssembly(newName, "Assembly-CSharp-modified.dll", moduleParameters);
+            resolver.Register(output);
+            var moduleDef = output.MainModule;
+
+            moduleDef.Types.Clear();
 
             //foreach (var f in Directory.GetFiles(Directory.GetCurrentDirectory(), "*.dll"))
             //{
@@ -390,32 +411,39 @@ namespace DumpityLibrary
             //var type = csharpDef.MainModule.GetType("BeatmapLevelSO");
             //var simpleColor = csharpDef.MainModule.GetType("SimpleColorSO");
             //var cMangager = csharpDef.MainModule.GetType("ColorManager");
-            
 
-            ReaderType = typeof(CustomBinaryReader);
-            AssetPtrType = typeof(AssetPtr);
-            SerializeFieldAttr = attr;
-
-            foreach (TypeDefinition d in csharpDef.MainModule.GetTypes())
+            foreach (TypeDefinition oldType in csharpDef.MainModule.GetTypes())
             {
-                if (!d.IsClass || d.Name.StartsWith("<"))
+                if (!oldType.IsClass || oldType.Name.StartsWith("<"))
                 {
-                    Console.WriteLine($"Skipping {d} because it is not a class!");
+                    Console.WriteLine($"Skipping {oldType} because it is not a class!");
                     continue;
                 }
-                List<FieldDefinition> serialized = FindSerializedData(d);
+                List<FieldDefinition> serialized = FindSerializedData(oldType);
                 if (serialized.Count == 0)
                 {
-                    Console.WriteLine($"Skipping {d} because it has no serializable fields!");
+                    Console.WriteLine($"Skipping {oldType} because it has no serializable fields!");
                     continue;
                 }
+
+                var newType = new TypeDefinition(oldType.Namespace, oldType.Name, oldType.Attributes);
+
+                // Populate all fields of the newType from the old type
+                foreach (var f in oldType.Fields)
+                {
+                    newType.Fields.Add(new FieldDefinition(f.Name, f.Attributes, f.FieldType));
+                }
+
                 Console.WriteLine("====================================STARTING TYPE=========================================");
-                Console.WriteLine($"Type Name: {d}");
+                Console.WriteLine($"Type Name: {newType}");
                 foreach (var f in serialized)
                 {
                     Console.WriteLine($"Serializable Field: {f}");
                 }
-                GenerateReadMethod(serialized, d);
+                GenerateReadMethod(serialized, newType);
+                Console.WriteLine($"Adding type: {newType} to the set of types");
+                if (moduleDef.Types.ToList().Find(t => t.FullName == newType.FullName) == null)
+                    moduleDef.Types.Add(newType);
                 //var q = Console.ReadKey();
                 //if (q.Key == ConsoleKey.Q)
                 //{
@@ -424,8 +452,11 @@ namespace DumpityLibrary
                 //    return;
                 //}
             }
-            Console.WriteLine($"Writing assembly: Assembly - CSharp - modified - BeatmapLevelSO.dll")
-            csharpDef.Write("Assembly-CSharp-modified-BeatmapLevelSO.dll");
+            Console.WriteLine($"Writing assembly: {output.MainModule.Name}");
+            var stream = new MemoryStream();
+            output.Write(stream);
+            File.WriteAllBytes(output.MainModule.Name, stream.ToArray());
+            //csharpDef.Write(csharpDef.Name.Name + ".dll");
         }
 
         public static void WriteWriteToMethod(TypeDefinition type, Type serializeFieldAttr)

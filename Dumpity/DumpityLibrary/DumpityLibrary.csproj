@@ -9,7 +9,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\DumpityDummyDLL\DumpityDummyDLL.csproj" />
+    <ProjectReference Include="..\DumpityDLL\DumpityDLL.csproj" />
   </ItemGroup>
 
 </Project>
