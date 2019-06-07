@@ -424,6 +424,8 @@ namespace DumpityLibrary
                 //    return;
                 //}
             }
+            Console.WriteLine($"Writing assembly: Assembly - CSharp - modified - BeatmapLevelSO.dll")
+            csharpDef.Write("Assembly-CSharp-modified-BeatmapLevelSO.dll");
         }
 
         public static void WriteWriteToMethod(TypeDefinition type, Type serializeFieldAttr)
