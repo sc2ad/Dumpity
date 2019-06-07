@@ -93,13 +93,13 @@ namespace DumpityLibrary
             // Write a primitive read line
             var callCode = worker.Create(OpCodes.Callvirt, thisType.Module.ImportReference(GetReadPrimitive(f.FieldType.MetadataType)));
             // Duplicate the reference
-            worker.Append(worker.Create(OpCodes.Dup));
+            worker.Emit(OpCodes.Dup);
             // Put Reader onto stack
-            worker.Append(worker.Create(OpCodes.Ldarg, method.Parameters[0]));
+            worker.Emit(OpCodes.Ldarg, method.Parameters[0]);
             // Call reader.ReadSOMEPRIMITIVE
             worker.Append(callCode);
             // Set the field of the object 
-            worker.Append(worker.Create(OpCodes.Stfld, f));
+            worker.Emit(OpCodes.Stfld, f);
             Console.WriteLine($"Writing {f.Name} as {f.FieldType}");
             f.IsPublic = true;
             f.IsPrivate = false;
@@ -110,13 +110,13 @@ namespace DumpityLibrary
             // Write the read aligned string line
             var callCode = worker.Create(OpCodes.Call, f.Module.ImportReference(ReaderType.GetMethod("ReadAlignedString")));
             // Duplicate the reference
-            worker.Append(worker.Create(OpCodes.Dup));
+            worker.Emit(OpCodes.Dup);
             // Put Reader onto stack
-            worker.Append(worker.Create(OpCodes.Ldarg, method.Parameters[0]));
+            worker.Emit(OpCodes.Ldarg, method.Parameters[0]);
             // Call reader.ReadAlignedString
             worker.Append(callCode);
             // Set the field of the object 
-            worker.Append(worker.Create(OpCodes.Stfld, f));
+            worker.Emit(OpCodes.Stfld, f);
         }
 
         public static void WriteReadPointer(ILProcessor worker, MethodDefinition method, FieldDefinition f)
@@ -125,13 +125,13 @@ namespace DumpityLibrary
             // Write the read aligned string line
             var callCode = worker.Create(OpCodes.Newobj, f.Module.ImportReference(typeof(AssetPtr).GetConstructor(new Type[] { ReaderType })));
             // Duplicate the reference
-            worker.Append(worker.Create(OpCodes.Dup));
+            worker.Emit(OpCodes.Dup);
             // Put Reader onto stack
-            worker.Append(worker.Create(OpCodes.Ldarg, method.Parameters[0]));
+            worker.Emit(OpCodes.Ldarg, method.Parameters[0]);
             // Call reader.ReadAlignedString
             worker.Append(callCode);
             // Set the field of the object 
-            worker.Append(worker.Create(OpCodes.Stfld, f));
+            worker.Emit(OpCodes.Stfld, f);
         }
 
         public static void WriteReadClass(ILProcessor worker, MethodDefinition method, FieldDefinition f, MethodDefinition read)
@@ -139,15 +139,15 @@ namespace DumpityLibrary
             // Write the read object line
             var callCode = worker.Create(OpCodes.Call, f.Module.ImportReference(read));
             // Duplicate the reference
-            worker.Append(worker.Create(OpCodes.Dup));
+            worker.Emit(OpCodes.Dup);
             // Put Reader onto stack
-            worker.Append(worker.Create(OpCodes.Ldarg, method.Parameters[0]));
+            worker.Emit(OpCodes.Ldarg, method.Parameters[0]);
             // Put length onto stack
-            worker.Append(worker.Create(OpCodes.Ldc_I4_0));
+            worker.Emit(OpCodes.Ldc_I4_0);
             // Call SomeObject.ReadFrom()
             worker.Append(callCode);
             // Set the field of the object 
-            worker.Append(worker.Create(OpCodes.Stfld, f));
+            worker.Emit(OpCodes.Stfld, f);
         }
 
         public class A
@@ -162,14 +162,14 @@ namespace DumpityLibrary
             // Write the read object line
             var callCode = worker.Create(OpCodes.Call, m.MakeGeneric(t));
             // Duplicate the reference
-            worker.Append(worker.Create(OpCodes.Dup));
+            worker.Emit(OpCodes.Dup);
             // Put the reader onto the stack
-            worker.Append(worker.Create(OpCodes.Ldarg, method.Parameters[0]));
+            worker.Emit(OpCodes.Ldarg, method.Parameters[0]);
             // Call ReadPrefixedArray()
             worker.Append(callCode);
             // Set the field
-            worker.Append(worker.Create(OpCodes.Stfld, f));
-            //worker.Append(worker.Create(OpCodes.Dup));
+            worker.Emit(OpCodes.Stfld, f);
+            //worker.Emit(OpCodes.Dup);
         }
 
         public static void WriteReadStruct(ILProcessor worker, MethodDefinition method, FieldDefinition f, TypeDefinition s)
@@ -179,8 +179,8 @@ namespace DumpityLibrary
             method.Body.Variables.Add(structVar);
             method.Body.InitLocals = true;
 
-            worker.Append(worker.Create(OpCodes.Ldloca_S, structVar));
-            worker.Append(worker.Create(OpCodes.Initobj, f.Module.ImportReference(s)));
+            worker.Emit(OpCodes.Ldloca_S, structVar);
+            worker.Emit(OpCodes.Initobj, f.Module.ImportReference(s));
 
             foreach (var field in s.Fields)
             {
@@ -188,22 +188,37 @@ namespace DumpityLibrary
                 {
                     var m = f.Module.ImportReference(GetReadPrimitive(field.FieldType.MetadataType));
                     // Ldloca
-                    worker.Append(worker.Create(OpCodes.Ldloca_S, structVar));
+                    worker.Emit(OpCodes.Ldloca_S, structVar);
                     // Load reader
-                    worker.Append(worker.Create(OpCodes.Ldarg_0));
+                    worker.Emit(OpCodes.Ldarg_0);
                     // Call m
-                    worker.Append(worker.Create(OpCodes.Call, m));
+                    worker.Emit(OpCodes.Call, m);
                     // Set field
-                    worker.Append(worker.Create(OpCodes.Stfld, f.Module.ImportReference(field)));
+                    worker.Emit(OpCodes.Stfld, f.Module.ImportReference(field));
                 }
                 else
                 {
-                    throw new Exception("Field in struct is NOT primitive");
+                    // Field might be an enum!
+                    if (field.FieldType.MetadataType == MetadataType.ValueType)
+                    {
+                        var m = f.Module.ImportReference(ReaderType.GetMethod("ReadInt32"));
+                        // Ldloca
+                        worker.Emit(OpCodes.Ldloca_S, structVar);
+                        // Load reader
+                        worker.Emit(OpCodes.Ldarg_0);
+                        // Call m
+                        worker.Emit(OpCodes.Call, m);
+                        // Set field
+                        worker.Emit(OpCodes.Stfld, f.Module.ImportReference(field));
+                    } else
+                    {
+                        throw new Exception("Field in struct is NOT primitive");
+                    }
                 }
             }
-            worker.Append(worker.Create(OpCodes.Dup));
-            worker.Append(worker.Create(OpCodes.Ldloc_S, structVar));
-            worker.Append(worker.Create(OpCodes.Stfld, f));
+            worker.Emit(OpCodes.Dup);
+            worker.Emit(OpCodes.Ldloc_S, structVar);
+            worker.Emit(OpCodes.Stfld, f);
         }
 
         public static void WriteReadOther(ILProcessor worker, MethodDefinition method, FieldDefinition f)
@@ -269,8 +284,8 @@ namespace DumpityLibrary
                         var readMethod = GenerateReadMethod(FindSerializedData(t), t);
                         Console.WriteLine($"Writing {f.Name} as an Array of {t.Name}");
                         WriteReadClassArray(worker, method, f, t, readMethod);
-                        //worker.Append(worker.Create(OpCodes.Dup));
-                        //worker.Append(worker.Create())
+                        //worker.Emit(OpCodes.Dup));
+                        //worker.Emit())
                     } else
                     {
                         // Otherwise, read a pointer for each item.
@@ -336,7 +351,7 @@ namespace DumpityLibrary
 
             var constructor = GetConstructor(thisType);
             // Create local object
-            worker.Append(worker.Create(OpCodes.Newobj, constructor));
+            worker.Emit(OpCodes.Newobj, constructor);
 
 
             foreach (var f in fieldsToWrite)
@@ -349,7 +364,7 @@ namespace DumpityLibrary
                     WriteReadOther(worker, method, f);
                 }
             }
-            worker.Append(worker.Create(OpCodes.Ret));
+            worker.Emit(OpCodes.Ret);
             Console.WriteLine($"Added: {method} to type: {thisType}");
             Console.WriteLine("=================================COMPLETED READ METHOD=================================");
             thisType.Methods.Add(method);
@@ -401,13 +416,13 @@ namespace DumpityLibrary
                     Console.WriteLine($"Serializable Field: {f}");
                 }
                 GenerateReadMethod(serialized, d);
-                var q = Console.ReadKey();
-                if (q.Key == ConsoleKey.Q)
-                {
-                    // End!
-                    csharpDef.Write("Assembly-CSharp-modified-BeatmapLevelSO.dll");
-                    return;
-                }
+                //var q = Console.ReadKey();
+                //if (q.Key == ConsoleKey.Q)
+                //{
+                //    // End!
+                //    csharpDef.Write("Assembly-CSharp-modified-BeatmapLevelSO.dll");
+                //    return;
+                //}
             }
         }
 
