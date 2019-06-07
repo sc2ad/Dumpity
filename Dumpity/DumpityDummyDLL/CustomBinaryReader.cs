@@ -33,6 +33,23 @@ namespace DumpityDummyDLL
             }
         }
 
+        public byte ReadAlignedByte()
+        {
+            byte b = (byte)Read();
+            AlignStream();
+            return b;
+        }
+
+        public char ReadAlignedChar()
+        {
+            return (char)ReadAlignedByte();
+        }
+
+        public bool ReadAlignedBool()
+        {
+            return ReadAlignedByte() > 0;
+        } 
+
         public string ReadAlignedString()
         {
             var length = ReadInt32();

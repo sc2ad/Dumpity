@@ -57,6 +57,33 @@ namespace DumpityLibrary
                 case MetadataType.Int32:
                     methodName = "ReadInt32";
                     break;
+                case MetadataType.Boolean:
+                    methodName = "ReadAlignedBool";
+                    break;
+                case MetadataType.Byte:
+                    methodName = "ReadAlignedByte";
+                    break;
+                case MetadataType.Char:
+                    methodName = "ReadAlignedChar";
+                    break;
+                case MetadataType.Double:
+                    methodName = "ReadDouble";
+                    break;
+                case MetadataType.Int16:
+                    methodName = "ReadInt16";
+                    break;
+                case MetadataType.Int64:
+                    methodName = "ReadInt64";
+                    break;
+                case MetadataType.UInt16:
+                    methodName = "ReadUInt16";
+                    break;
+                case MetadataType.UInt32:
+                    methodName = "ReadUInt32";
+                    break;
+                case MetadataType.UInt64:
+                    methodName = "ReadUInt64";
+                    break;
             }
             return ReaderType.GetMethod(methodName);
         }
@@ -81,7 +108,7 @@ namespace DumpityLibrary
         public static void WriteReadAlignedString(ILProcessor worker, MethodDefinition method, FieldDefinition f)
         {
             // Write the read aligned string line
-            var callCode = worker.Create(OpCodes.Call, f.Module.ImportReference(typeof(CustomBinaryReader).GetMethod("ReadAlignedString")));
+            var callCode = worker.Create(OpCodes.Call, f.Module.ImportReference(ReaderType.GetMethod("ReadAlignedString")));
             // Duplicate the reference
             worker.Append(worker.Create(OpCodes.Dup));
             // Put Reader onto stack
@@ -145,6 +172,40 @@ namespace DumpityLibrary
             //worker.Append(worker.Create(OpCodes.Dup));
         }
 
+        public static void WriteReadStruct(ILProcessor worker, MethodDefinition method, FieldDefinition f, TypeDefinition s)
+        {
+            var structVar = new VariableDefinition(f.Module.ImportReference(s));
+
+            method.Body.Variables.Add(structVar);
+            method.Body.InitLocals = true;
+
+            worker.Append(worker.Create(OpCodes.Ldloca_S, structVar));
+            worker.Append(worker.Create(OpCodes.Initobj, f.Module.ImportReference(s)));
+
+            foreach (var field in s.Fields)
+            {
+                if (field.FieldType.IsPrimitive)
+                {
+                    var m = f.Module.ImportReference(GetReadPrimitive(field.FieldType.MetadataType));
+                    // Ldloca
+                    worker.Append(worker.Create(OpCodes.Ldloca_S, structVar));
+                    // Load reader
+                    worker.Append(worker.Create(OpCodes.Ldarg_0));
+                    // Call m
+                    worker.Append(worker.Create(OpCodes.Call, m));
+                    // Set field
+                    worker.Append(worker.Create(OpCodes.Stfld, f.Module.ImportReference(field)));
+                }
+                else
+                {
+                    throw new Exception("Field in struct is NOT primitive");
+                }
+            }
+            worker.Append(worker.Create(OpCodes.Dup));
+            worker.Append(worker.Create(OpCodes.Ldloc_S, structVar));
+            worker.Append(worker.Create(OpCodes.Stfld, f));
+        }
+
         public static void WriteReadOther(ILProcessor worker, MethodDefinition method, FieldDefinition f)
         {
             // If the value is a string, class; we need to read it right away.
@@ -161,22 +222,14 @@ namespace DumpityLibrary
                     break;
                 case MetadataType.ValueType:
                     // Structs are always serialized
+                    if (!f.FieldType.FullName.Contains("UnityEngine"))
+                    {
+                        break;
+                    }
                     Console.WriteLine($"Writing {f.Name} as struct with type: {f.FieldType}");
                     f.IsPublic = true;
                     f.IsPrivate = false;
-                    foreach (var field in f.FieldType.Resolve().Fields)
-                    {
-                        if (field.FieldType.IsPrimitive)
-                        {
-                            // Read Primitive
-                            WriteReadStructPrimitive(worker, method, f.DeclaringType, field);
-                        } else
-                        {
-                            // Read Class
-                            //WriteReadOther(worker, method, f.DeclaringType, field);
-                            throw new Exception("Struct with class!");
-                        }
-                    }
+                    WriteReadStruct(worker, method, f, f.FieldType.Resolve());
                     break;
                 case MetadataType.Class:
                     Console.WriteLine($"{f.FieldType.FullName} is the type of field: {f.Name}");
@@ -305,33 +358,57 @@ namespace DumpityLibrary
 
         public static void Test()
         {
-            AssemblyDefinition csharpDef = AssemblyDefinition.ReadAssembly("Assembly-CSharp.dll");
-            var type = csharpDef.MainModule.GetType("BeatmapLevelSO");
-            var simpleColor = csharpDef.MainModule.GetType("SimpleColorSO");
             AssemblyDefinition unityDef = AssemblyDefinition.ReadAssembly("UnityEngine.CoreModule.dll");
             var attr = unityDef.MainModule.GetType("UnityEngine.SerializeField");
             Console.WriteLine($"Serialize Field: {attr}");
-            foreach (var m in csharpDef.Modules)
-            {
-                Console.WriteLine($"**** START MODULE {m} ****");
-                foreach (var t in m.GetTypes())
-                {
-                    //Console.WriteLine($"Found TypeDefinition: {t}");
-                }
-            }
+
+            AssemblyDefinition csharpDef = AssemblyDefinition.ReadAssembly("Assembly-CSharp.dll");
+
+            //foreach (var f in Directory.GetFiles(Directory.GetCurrentDirectory(), "*.dll"))
+            //{
+            //    if (f.EndsWith(".dll"))
+            //    {
+            //        AssemblyDefinition.ReadAssembly(f);
+            //    }
+            //}
+
+            //var type = csharpDef.MainModule.GetType("BeatmapLevelSO");
+            //var simpleColor = csharpDef.MainModule.GetType("SimpleColorSO");
+            //var cMangager = csharpDef.MainModule.GetType("ColorManager");
+            
 
             ReaderType = typeof(CustomBinaryReader);
             AssetPtrType = typeof(AssetPtr);
             SerializeFieldAttr = attr;
 
-            List<FieldDefinition> serialized = FindSerializedData(type);
-            foreach (var f in serialized)
+            foreach (TypeDefinition d in csharpDef.MainModule.GetTypes())
             {
-                Console.WriteLine($"Serializable Field: {f}");
+                if (!d.IsClass || d.Name.StartsWith("<"))
+                {
+                    Console.WriteLine($"Skipping {d} because it is not a class!");
+                    continue;
+                }
+                List<FieldDefinition> serialized = FindSerializedData(d);
+                if (serialized.Count == 0)
+                {
+                    Console.WriteLine($"Skipping {d} because it has no serializable fields!");
+                    continue;
+                }
+                Console.WriteLine("====================================STARTING TYPE=========================================");
+                Console.WriteLine($"Type Name: {d}");
+                foreach (var f in serialized)
+                {
+                    Console.WriteLine($"Serializable Field: {f}");
+                }
+                GenerateReadMethod(serialized, d);
+                var q = Console.ReadKey();
+                if (q.Key == ConsoleKey.Q)
+                {
+                    // End!
+                    csharpDef.Write("Assembly-CSharp-modified-BeatmapLevelSO.dll");
+                    return;
+                }
             }
-            GenerateReadMethod(serialized, type);
-            GenerateReadMethod(FindSerializedData(simpleColor), simpleColor);
-            csharpDef.Write("Assembly-CSharp-modified-BeatmapLevelSO.dll");
         }
 
         public static void WriteWriteToMethod(TypeDefinition type, Type serializeFieldAttr)
