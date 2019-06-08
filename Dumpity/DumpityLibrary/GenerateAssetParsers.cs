@@ -393,12 +393,12 @@ namespace DumpityLibrary
             AssetPtrType = typeof(AssetPtr);
             SerializeFieldAttr = attr;
 
-            var newName = new AssemblyNameDefinition("Assembly-CSharp-modified", new Version("1.0.0"));
-            AssemblyDefinition output = AssemblyDefinition.CreateAssembly(newName, "Assembly-CSharp-modified.dll", moduleParameters);
-            resolver.Register(output);
-            var moduleDef = output.MainModule;
+            //var newName = new AssemblyNameDefinition("Assembly-CSharp-modified", new Version("1.0.0"));
+            //AssemblyDefinition output = AssemblyDefinition.CreateAssembly(newName, "Assembly-CSharp-modified.dll", moduleParameters);
+            //resolver.Register(output);
+            //var moduleDef = output.MainModule;
 
-            moduleDef.Types.Clear();
+            //moduleDef.Types.Clear();
 
             //foreach (var f in Directory.GetFiles(Directory.GetCurrentDirectory(), "*.dll"))
             //{
@@ -426,24 +426,24 @@ namespace DumpityLibrary
                     continue;
                 }
 
-                var newType = new TypeDefinition(oldType.Namespace, oldType.Name, oldType.Attributes);
+                //var newType = new TypeDefinition(oldType.Namespace, oldType.Name, oldType.Attributes);
 
-                // Populate all fields of the newType from the old type
-                foreach (var f in oldType.Fields)
-                {
-                    newType.Fields.Add(new FieldDefinition(f.Name, f.Attributes, f.FieldType));
-                }
+                //// Populate all fields of the newType from the old type
+                //foreach (var f in oldType.Fields)
+                //{
+                //    newType.Fields.Add(new FieldDefinition(f.Name, f.Attributes, f.FieldType));
+                //}
 
                 Console.WriteLine("====================================STARTING TYPE=========================================");
-                Console.WriteLine($"Type Name: {newType}");
+                Console.WriteLine($"Type Name: {oldType}");
                 foreach (var f in serialized)
                 {
                     Console.WriteLine($"Serializable Field: {f}");
                 }
-                GenerateReadMethod(serialized, newType);
-                Console.WriteLine($"Adding type: {newType} to the set of types");
-                if (moduleDef.Types.ToList().Find(t => t.FullName == newType.FullName) == null)
-                    moduleDef.Types.Add(newType);
+                GenerateReadMethod(serialized, oldType);
+                Console.WriteLine($"Adding type: {oldType} to the set of types");
+                //if (moduleDef.Types.ToList().Find(t => t.FullName == oldType.FullName) == null)
+                //    moduleDef.Types.Add(oldType);
                 //var q = Console.ReadKey();
                 //if (q.Key == ConsoleKey.Q)
                 //{
@@ -452,11 +452,12 @@ namespace DumpityLibrary
                 //    return;
                 //}
             }
-            Console.WriteLine($"Writing assembly: {output.MainModule.Name}");
-            var stream = new MemoryStream();
-            output.Write(stream);
-            File.WriteAllBytes(output.MainModule.Name, stream.ToArray());
-            //csharpDef.Write(csharpDef.Name.Name + ".dll");
+            //Console.WriteLine($"Writing assembly: {output.MainModule.Name}");
+            //var stream = new MemoryStream();
+            //output.Write(stream);
+            //File.WriteAllBytes(output.MainModule.Name, stream.ToArray());
+            csharpDef.Name.Name = "Assembly-CSharp-modified";
+            csharpDef.Write(csharpDef.Name.Name + ".dll");
         }
 
         public static void WriteWriteToMethod(TypeDefinition type, Type serializeFieldAttr)
