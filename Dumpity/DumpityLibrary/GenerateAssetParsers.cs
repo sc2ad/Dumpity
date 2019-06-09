@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -31,7 +31,7 @@ namespace DumpityLibrary
                     //Console.WriteLine($"Custom Attribute: {atr.AttributeType.FullName} compared to {SerializeFieldAttr.FullName}");
                     if (atr.AttributeType.FullName.Equals(SerializeFieldAttr.FullName))
                     {
-                        Console.WriteLine($"{f.Name} has type: {f.FieldType} and MetadataType: {f.FieldType.MetadataType}");
+                        Console.WriteLine($"{f.Name} has type: {f.FieldType} (from: {f.FieldType.Module.Assembly}) and MetadataType: {f.FieldType.MetadataType}");
                         fields.Add(f);
                     }
                 }
@@ -66,11 +66,20 @@ namespace DumpityLibrary
                 case MetadataType.Char:
                     methodName = "ReadAlignedChar";
                     break;
+                case MetadataType.String:
+                    methodName = "ReadAlignedString";
+                    break;
+                case MetadataType.Single:
+                    methodName = "ReadSingle";
+                    break;
                 case MetadataType.Double:
                     methodName = "ReadDouble";
                     break;
                 case MetadataType.Int16:
                     methodName = "ReadInt16";
+                    break;
+                case MetadataType.Int32:
+                    methodName = "ReadInt32";
                     break;
                 case MetadataType.Int64:
                     methodName = "ReadInt64";
@@ -90,8 +99,10 @@ namespace DumpityLibrary
 
         public static void WriteReadPrimitive(ILProcessor worker, MethodDefinition method, TypeDefinition thisType, FieldDefinition f)
         {
+            var r = GetReadPrimitive(f.FieldType.MetadataType);
             // Write a primitive read line
-            var callCode = worker.Create(OpCodes.Callvirt, thisType.Module.ImportReference(GetReadPrimitive(f.FieldType.MetadataType)));
+            var callCode = worker.Create(OpCodes.Callvirt, thisType.Module.ImportReference(r));
+            f.Module.ImportReference(r.ReturnType);
             // Duplicate the reference
             worker.Emit(OpCodes.Dup);
             // Put Reader onto stack
@@ -107,8 +118,10 @@ namespace DumpityLibrary
 
         public static void WriteReadAlignedString(ILProcessor worker, MethodDefinition method, FieldDefinition f)
         {
+            var r = ReaderType.GetMethod("ReadAlignedString");
             // Write the read aligned string line
-            var callCode = worker.Create(OpCodes.Call, f.Module.ImportReference(ReaderType.GetMethod("ReadAlignedString")));
+            var callCode = worker.Create(OpCodes.Call, f.Module.ImportReference(r));
+            f.Module.ImportReference(r.ReturnType);
             // Duplicate the reference
             worker.Emit(OpCodes.Dup);
             // Put Reader onto stack
@@ -150,17 +163,13 @@ namespace DumpityLibrary
             worker.Emit(OpCodes.Stfld, f);
         }
 
-        public class A
+        public static void WriteReadClassArray(ILProcessor worker, MethodDefinition method, FieldDefinition f, TypeDefinition t, MethodReference read)
         {
-            public AssetPtr[] a;
-        }
-
-        public static void WriteReadClassArray(ILProcessor worker, MethodDefinition method, FieldDefinition f, TypeDefinition t, MethodDefinition read)
-        {
-            var m = f.Module.ImportReference(ReaderType.GetMethod("ReadPrefixedArray", Type.EmptyTypes));
-            
+            var r = ReaderType.GetMethod("ReadPrefixedArray", Type.EmptyTypes);
+            var m = f.Module.ImportReference(r);
+            //f.Module.ImportReference(r.ReturnType);
             // Write the read object line
-            var callCode = worker.Create(OpCodes.Call, m.MakeGeneric(t));
+            var callCode = worker.Create(OpCodes.Call, m.MakeGeneric(f.Module.ImportReference(t)));
             // Duplicate the reference
             worker.Emit(OpCodes.Dup);
             // Put the reader onto the stack
@@ -184,9 +193,15 @@ namespace DumpityLibrary
 
             foreach (var field in s.Fields)
             {
-                if (field.FieldType.IsPrimitive)
+                if (field.IsStatic || field.HasConstant)
+                {
+                    // The field is either static or constant, so don't serialize it
+                    continue;
+                }
+                if (IsPrimitive(field.FieldType))
                 {
                     var m = f.Module.ImportReference(GetReadPrimitive(field.FieldType.MetadataType));
+                    f.Module.ImportReference(field.FieldType);
                     // Ldloca
                     worker.Emit(OpCodes.Ldloca_S, structVar);
                     // Load reader
@@ -202,6 +217,7 @@ namespace DumpityLibrary
                     if (field.FieldType.MetadataType == MetadataType.ValueType)
                     {
                         var m = f.Module.ImportReference(ReaderType.GetMethod("ReadInt32"));
+                        f.Module.ImportReference(field.FieldType);
                         // Ldloca
                         worker.Emit(OpCodes.Ldloca_S, structVar);
                         // Load reader
@@ -212,7 +228,7 @@ namespace DumpityLibrary
                         worker.Emit(OpCodes.Stfld, f.Module.ImportReference(field));
                     } else
                     {
-                        throw new Exception("Field in struct is NOT primitive");
+                        throw new Exception("Field in struct is unknown!");
                     }
                 }
             }
@@ -229,12 +245,6 @@ namespace DumpityLibrary
             var type = f.FieldType.MetadataType;
             switch (type)
             {
-                case MetadataType.String:
-                    Console.WriteLine($"Writing {f.Name} as aligned string");
-                    WriteReadAlignedString(worker, method, f);
-                    f.IsPublic = true;
-                    f.IsPrivate = false;
-                    break;
                 case MetadataType.ValueType:
                     // Structs are always serialized
                     if (!f.FieldType.FullName.Contains("UnityEngine"))
@@ -280,10 +290,21 @@ namespace DumpityLibrary
                     if (IsSerializable(t))
                     {
                         // Call the object's ReadFrom method for each item
-                        Console.WriteLine($"Writing {t.Name} as an Object to read/write from!");
-                        var readMethod = GenerateReadMethod(FindSerializedData(t), t);
-                        Console.WriteLine($"Writing {f.Name} as an Array of {t.Name}");
-                        WriteReadClassArray(worker, method, f, t, readMethod);
+                        if (IsPrimitive(t))
+                        {
+                            // Primitive, use that. Don't recurse.
+                            var readMethod = GetReadPrimitive(t.MetadataType);
+                            Console.WriteLine($"Writing {f.Name} as an Array of {t.Name} (PRIMITIVE)");
+                            WriteReadClassArray(worker, method, f, t, f.Module.ImportReference(readMethod));
+                        } else
+                        {
+                            Console.WriteLine($"Writing {t.Name} as an Object to read/write from!");
+                            // Non-primitive, recurse
+                            var readMethod = GenerateReadMethod(FindSerializedData(t), t);
+                            Console.WriteLine($"Writing {f.Name} as an Array of {t.Name}");
+                            WriteReadClassArray(worker, method, f, t, readMethod);
+                        }
+                        
                         //worker.Emit(OpCodes.Dup));
                         //worker.Emit())
                     } else
@@ -360,7 +381,7 @@ namespace DumpityLibrary
 
             foreach (var f in fieldsToWrite)
             {
-                if (f.FieldType.IsPrimitive)
+                if (IsPrimitive(f.FieldType))
                 {
                     WriteReadPrimitive(worker, method, thisType, f);
                 } else
@@ -414,6 +435,11 @@ namespace DumpityLibrary
 
             foreach (TypeDefinition oldType in csharpDef.MainModule.GetTypes())
             {
+                if (oldType.FullName != "HMUI.TextSegmentedControlCellNew" && oldType.FullName != "HMUI.Toggle" 
+                    && oldType.FullName != "LevelPacksTableView" && oldType.FullName != "BeatmapLevelSO")
+                {
+                    continue;
+                }
                 if (!oldType.IsClass || oldType.Name.StartsWith("<"))
                 {
                     Console.WriteLine($"Skipping {oldType} because it is not a class!");

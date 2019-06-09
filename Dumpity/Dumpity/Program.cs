@@ -7,7 +7,6 @@ namespace DumpityScript
     {
         static void Main(string[] args)
         {
-            Console.WriteLine("Hello World!");
             GenerateAssetParsers.Test();
         }
     }
