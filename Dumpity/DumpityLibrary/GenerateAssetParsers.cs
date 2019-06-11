@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -46,17 +46,67 @@ namespace DumpityLibrary
             return t.IsSerializable;
         }
 
+        public static bool IsPrimitive(TypeReference r)
+        {
+            return r.IsPrimitive || r.MetadataType == MetadataType.String;
+        }
+
+        private static TypeReference ImportReference(FieldDefinition f)
+        {
+            var moduleDefinition = f.Module;
+            switch (f.FieldType.MetadataType)
+            {
+                case MetadataType.Object:
+                    return moduleDefinition.ImportReference(typeof(object));
+                case MetadataType.Void:
+                    return moduleDefinition.ImportReference(typeof(void));
+                case MetadataType.Boolean:
+                    return moduleDefinition.ImportReference(typeof(bool));
+                case MetadataType.Char:
+                    return moduleDefinition.ImportReference(typeof(char));
+                case MetadataType.SByte:
+                    return moduleDefinition.ImportReference(typeof(sbyte));
+                case MetadataType.Byte:
+                    return moduleDefinition.ImportReference(typeof(byte));
+                case MetadataType.Int16:
+                    return moduleDefinition.ImportReference(typeof(short));
+                case MetadataType.UInt16:
+                    return moduleDefinition.ImportReference(typeof(ushort));
+                case MetadataType.Int32:
+                    return moduleDefinition.ImportReference(typeof(int));
+                case MetadataType.UInt32:
+                    return moduleDefinition.ImportReference(typeof(uint));
+                case MetadataType.IntPtr:
+                    return moduleDefinition.ImportReference(typeof(IntPtr));
+                case MetadataType.UIntPtr:
+                    return moduleDefinition.ImportReference(typeof(UIntPtr));
+                case MetadataType.Int64:
+                    return moduleDefinition.ImportReference(typeof(long));
+                case MetadataType.UInt64:
+                    return moduleDefinition.ImportReference(typeof(ulong));
+                case MetadataType.Single:
+                    return moduleDefinition.ImportReference(typeof(float));
+                case MetadataType.Double:
+                    return moduleDefinition.ImportReference(typeof(double));
+                case MetadataType.String:
+                    // Might need to import it from there, instead of using normal string?
+                    // Not sure.
+                    return moduleDefinition.ImportReference(typeof(string));
+                case MetadataType.TypedByReference:
+                    return moduleDefinition.ImportReference(typeof(TypedReference));
+                case MetadataType.Class:
+                case MetadataType.ValueType:
+                    return moduleDefinition.ImportReference(f.FieldType);
+                default:
+                    return moduleDefinition.ImportReference(f.FieldType);
+            }
+        }
+
         public static MethodInfo GetReadPrimitive(MetadataType type)
         {
             string methodName = "";
             switch (type)
             {
-                case MetadataType.Single:
-                    methodName = "ReadSingle";
-                    break;
-                case MetadataType.Int32:
-                    methodName = "ReadInt32";
-                    break;
                 case MetadataType.Boolean:
                     methodName = "ReadAlignedBool";
                     break;
