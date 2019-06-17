@@ -17,6 +17,8 @@ namespace DumpityLibrary
         public static Type WriterType { get; private set; }
         public static Type AssetPtrType { get; private set; }
         public static TypeDefinition SerializeFieldAttr { get; private set; }
+        public static bool GenerateJakibakiHooks { get; set; } = true;
+        public static string JakibakiHooksFile { get; set; } = @"hooks.c";
 
         public static List<FieldDefinition> FindSerializedData(TypeDefinition def)
         {
@@ -483,6 +485,8 @@ namespace DumpityLibrary
             //var simpleColor = csharpDef.MainModule.GetType("SimpleColorSO");
             //var cMangager = csharpDef.MainModule.GetType("ColorManager");
 
+            var hg = new HookGenerator(JakibakiHooksFile);
+
             foreach (TypeDefinition oldType in csharpDef.MainModule.GetTypes())
             {
                 if (oldType.FullName != "HMUI.TextSegmentedControlCellNew" && oldType.FullName != "HMUI.Toggle" 
@@ -518,6 +522,12 @@ namespace DumpityLibrary
                 }
                 GenerateReadMethod(serialized, oldType);
                 Console.WriteLine($"Adding type: {oldType} to the set of types");
+
+                if (GenerateJakibakiHooks)
+                {
+                    hg.Add(oldType);
+                }
+
                 //if (moduleDef.Types.ToList().Find(t => t.FullName == oldType.FullName) == null)
                 //    moduleDef.Types.Add(oldType);
                 //var q = Console.ReadKey();
@@ -532,6 +542,7 @@ namespace DumpityLibrary
             //var stream = new MemoryStream();
             //output.Write(stream);
             //File.WriteAllBytes(output.MainModule.Name, stream.ToArray());
+            hg.Write();
             csharpDef.Name.Name = "Assembly-CSharp-modified";
             csharpDef.Write(csharpDef.Name.Name + ".dll");
         }
