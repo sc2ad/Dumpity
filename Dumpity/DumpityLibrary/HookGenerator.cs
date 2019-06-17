@@ -47,7 +47,6 @@ namespace DumpityLibrary
         {
             FileName = fName;
             Methods = new List<MethodData>();
-            Structs = new HashSet<StructData>();
             Hooks = new List<MethodData>();
         }
         public void Add(TypeDefinition def)
@@ -100,16 +99,20 @@ namespace DumpityLibrary
         {
             if (Structs == null)
             {
-                var structs = new HashSet<StructData>();
+                Structs = new HashSet<StructData>();
                 foreach (var method in Methods)
                 {
                     if (!method.Definition.IsStatic)
                     {
                         // Then we need to make the base type of this method a struct.
-                        structs.Add(new StructData(method.Definition.DeclaringType));
+                        if (Structs.FirstOrDefault(sd => sd.Name == method.Definition.DeclaringType.Name) == null)
+                        {
+                            // Add the struct if there are no existing matches
+                            Structs.Add(new StructData(method.Definition.DeclaringType));
+                        }
                     }
                 }
-                Structs = structs;
+                Console.WriteLine("Found: " + Structs.Count + " structs!");
             }
             return Structs;
         }
@@ -124,7 +127,7 @@ namespace DumpityLibrary
                     StringBuilder b = new StringBuilder("\t");
                     if (f.FieldType.IsPrimitive)
                     {
-                        b.Append(f.FieldType);
+                        b.Append(GetPrimitiveName(f.FieldType.Name));
                     } else
                     {
                         b.Append("void*");
@@ -151,7 +154,7 @@ namespace DumpityLibrary
             }
         }
 
-        private string GetTypeName(MethodData m, TypeReference type)
+        private string GetTypeName(TypeReference type)
         {
             if (!type.IsPrimitive)
             {
@@ -178,16 +181,28 @@ namespace DumpityLibrary
                 b.Append(", ");
                 b.Append(m.Offset);
                 b.Append(", ");
-                b.Append(GetTypeName(m, m.Definition.ReturnType));
+                b.Append(GetTypeName(m.Definition.ReturnType));
+                if (!m.Definition.IsStatic)
+                {
+                    // Non static method needs "self" as first parameter
+                    b.Append(", ");
+                    if (Structs.FirstOrDefault(a => a.Name == m.Definition.DeclaringType.Name) != null)
+                    {
+                        // Then we know there is a matching struct!
+                        Console.WriteLine("Found written struct with name: " + m.Definition.DeclaringType.Name);
+                    }
+                    b.Append(GetTypeName(m.Definition.DeclaringType));
+                    b.Append(" self");
+                }
                 foreach (var p in m.Definition.Parameters)
                 {
                     b.Append(", ");
                     if (!p.ParameterType.IsPrimitive)
                     {
-                        b.Append(GetTypeName(m, p.ParameterType) + "*");
+                        b.Append(GetTypeName(p.ParameterType) + "*");
                     } else
                     {
-                        b.Append(GetTypeName(m, p.ParameterType));
+                        b.Append(GetTypeName(p.ParameterType));
                     }
                     b.Append(" ");
                     b.Append(p.Name);
@@ -204,6 +219,14 @@ namespace DumpityLibrary
                 }
                 b.Append(m.Name);
                 b.Append("(");
+                if (!m.Definition.IsStatic)
+                {
+                    b.Append("self");
+                    if (m.Definition.Parameters.Count > 0)
+                    {
+                        b.Append(", ");
+                    }
+                }
                 for (int i = 0; i < m.Definition.Parameters.Count; i++)
                 {
                     b.Append(m.Definition.Parameters[i].Name);
