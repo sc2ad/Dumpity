@@ -11,12 +11,12 @@ namespace DumpityLibrary
     {
         internal string Offset { get; }
         internal MethodDefinition Definition { get; }
-        internal string Name { get; }
+        internal string Name { set;  get; }
         public MethodData(string offset, MethodDefinition def)
         {
             Offset = offset;
             Definition = def;
-            Name = def.DeclaringType.Name + "_" + def.Name;
+            Name = (def.DeclaringType.Name + "_" + def.Name).Replace('.', '_');
         }
     }
     class StructData
@@ -51,6 +51,17 @@ namespace DumpityLibrary
         }
         public void Add(TypeDefinition def)
         {
+            if (def.FullName.Contains("System"))
+            {
+                // Don't add default type methods
+                return;
+            }
+            if (def.IsGenericInstance || def.IsGenericParameter || def.ContainsGenericParameter || !def.IsClass || !def.Fields.Any(f => f.CustomAttributes.Count >= 1 
+            && f.CustomAttributes[0].Fields.Count == 1 && f.CustomAttributes[0].Fields[0].Name == "Offset"))
+            {
+                // Don't add generics, or anything that doesn't have a FieldOffset custom attribute
+                return;
+            }
             foreach (var m in def.Methods)
             {
                 if (m.CustomAttributes.Count == 0)
@@ -72,7 +83,17 @@ namespace DumpityLibrary
                         // Not actually an offset attribute.
                         continue;
                     }
-                    Methods.Add(new MethodData((string)offsetVal.Argument.Value, m));
+                    if (m.Name.Contains("<"))
+                    {
+                        // Just skip special methods for now.
+                        continue;
+                    }
+                    // Support for overloaded methods
+                    int dupCount = Methods.Count(md => md.Name.StartsWith(m.DeclaringType.Name + "_" + m.Name));
+                    var nmd = new MethodData((string)offsetVal.Argument.Value, m);
+                    if (dupCount > 0)
+                        nmd.Name += "_" + dupCount;
+                    Methods.Add(nmd);
                 }
             }
         }
@@ -123,8 +144,9 @@ namespace DumpityLibrary
             {
                 writer.WriteLine("typedef struct __attribute__((__packed__)) {");
                 // Assumes that there is always at least one field in the struct
-                writer.WriteLine("\tchar _unused_data_useless[" + GetFieldOffset(s.Fields.First()) + "];\n");
-                foreach (var f in s.Fields)
+                var fields = GetValidFields(s);
+                writer.WriteLine("\tchar _unused_data_useless[" + GetFieldOffset(fields.First()) + "];\n");
+                foreach (var f in fields)
                 {
                     StringBuilder b = new StringBuilder("\t");
                     if (f.FieldType.IsPrimitive)
@@ -134,11 +156,31 @@ namespace DumpityLibrary
                     {
                         b.Append("void*");
                     }
-                    b.Append(" " + f.Name + ";");
+                    if (f.Name.StartsWith("<"))
+                    {
+                        b.Append(" " + f.Name.Replace("<", "").Replace(">", "_") + ";");
+                    } else
+                    {
+                        b.Append(" " + f.Name + ";");
+                    }
                     writer.WriteLine(b.ToString());
                 }
                 writer.WriteLine("} " + s.Name + ";");
             }
+        }
+
+        private List<FieldDefinition> GetValidFields(StructData s)
+        {
+            var fields = new List<FieldDefinition>();
+            foreach (var f in s.Fields)
+            {
+                if (f.IsStatic || f.IsSpecialName || f.Constant != null)
+                {
+                    continue;
+                }
+                fields.Add(f);
+            }
+            return fields;
         }
 
         private string GetFieldOffset(FieldDefinition f)
@@ -151,7 +193,7 @@ namespace DumpityLibrary
                     return (string)ca.Fields[0].Argument.Value;
                 }
             }
-            throw new ApplicationException("Could not find FieldOffset for name: " + f.Name + " it has no CustomAttributes!");
+            throw new ApplicationException("Could not find FieldOffset for type: " + f.FullName + " it has no CustomAttributes!");
         }
 
         private string GetPrimitiveName(string name)
@@ -164,6 +206,14 @@ namespace DumpityLibrary
                     return "char";
                 case "Int32":
                     return "int";
+                case "UInt32":
+                    return "unsigned int";
+                case "Int64":
+                    return "long";
+                case "Char":
+                    return "char";
+                case "Double":
+                    return "double";
                 default:
                     return name;
             }
