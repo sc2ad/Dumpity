@@ -122,6 +122,8 @@ namespace DumpityLibrary
             foreach (var s in structs)
             {
                 writer.WriteLine("typedef struct __attribute__((__packed__)) {");
+                // Assumes that there is always at least one field in the struct
+                writer.WriteLine("\tchar _unused_data_useless[" + GetFieldOffset(s.Fields.First()) + "];\n");
                 foreach (var f in s.Fields)
                 {
                     StringBuilder b = new StringBuilder("\t");
@@ -137,6 +139,19 @@ namespace DumpityLibrary
                 }
                 writer.WriteLine("} " + s.Name + ";");
             }
+        }
+
+        private string GetFieldOffset(FieldDefinition f)
+        {
+            foreach (var ca in f.CustomAttributes)
+            {
+                if (ca.HasFields && ca.Fields.Count == 1 && ca.Fields[0].Name == "Offset")
+                {
+                    // This is the proper attribute!
+                    return (string)ca.Fields[0].Argument.Value;
+                }
+            }
+            throw new ApplicationException("Could not find FieldOffset for name: " + f.Name + " it has no CustomAttributes!");
         }
 
         private string GetPrimitiveName(string name)
