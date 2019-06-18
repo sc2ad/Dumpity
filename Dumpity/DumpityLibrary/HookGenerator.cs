@@ -148,6 +148,18 @@ namespace DumpityLibrary
                 writer.WriteLine("\tchar _unused_data_useless[" + GetFieldOffset(fields.First()) + "];\n");
                 foreach (var f in fields)
                 {
+                    bool bk = false;
+                    foreach (string str in Constants.ForbiddenSuffixes)
+                    {
+                        if (f.Name.EndsWith(str))
+                        {
+                            // Skip writing it
+                            bk = true;
+                            break;
+                        }
+                    }
+                    if (bk)
+                        continue;
                     StringBuilder b = new StringBuilder("\t");
                     if (f.FieldType.IsPrimitive)
                     {

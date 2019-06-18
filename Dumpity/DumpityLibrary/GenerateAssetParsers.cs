@@ -149,11 +149,11 @@ namespace DumpityLibrary
             return ReaderType.GetMethod(methodName);
         }
 
-        public static void WriteReadPrimitive(ILProcessor worker, MethodDefinition method, TypeDefinition thisType, FieldDefinition f)
+        public static void WriteReadPrimitive(ILProcessor worker, MethodDefinition method, FieldDefinition f)
         {
             var r = GetReadPrimitive(f.FieldType.MetadataType);
             // Write a primitive read line
-            var callCode = worker.Create(OpCodes.Callvirt, thisType.Module.ImportReference(r));
+            var callCode = worker.Create(OpCodes.Callvirt, method.Module.ImportReference(r));
             f.Module.ImportReference(r.ReturnType);
             // Duplicate the reference
             worker.Emit(OpCodes.Dup);
@@ -324,9 +324,13 @@ namespace DumpityLibrary
                         // This should be a pointer.
                         // Need to add a field and make it public here.
                         Console.WriteLine($"Writing {f.Name} as a pointer with attributes: {f.Attributes}");
-                        // Create the public field for the pointer!
-                        var assetF = new FieldDefinition(f.Name + "Ptr", Mono.Cecil.FieldAttributes.Public, f.Module.ImportReference(AssetPtrType));
-                        f.DeclaringType.Fields.Add(assetF);
+                        var assetF = f;
+                        if (!f.FieldType.FullName.Contains(AssetPtrType.FullName))
+                        {
+                            // Create the public field for the pointer!
+                            assetF = new FieldDefinition(f.Name + "Ptr", Mono.Cecil.FieldAttributes.Public, f.Module.ImportReference(AssetPtrType));
+                            f.DeclaringType.Fields.Add(assetF);
+                        }
                         WriteReadPointer(worker, method, assetF);
                     }
                     break;
@@ -369,9 +373,16 @@ namespace DumpityLibrary
             }
         }
 
-        public static MethodInfo GetReadPointer()
+        public static void WriteRead(ILProcessor worker, MethodDefinition method, FieldDefinition f)
         {
-            return ReaderType.GetMethod("");
+            if (IsPrimitive(f.FieldType))
+            {
+                WriteReadPrimitive(worker, method, f);
+            }
+            else
+            {
+                WriteReadOther(worker, method, f);
+            }
         }
 
         public static ParameterDefinition GetBinaryReaderParameter(ModuleDefinition def)
@@ -408,6 +419,32 @@ namespace DumpityLibrary
             return newConstructor;
         }
 
+        public static void GenerateReadUnityHeader(ILProcessor worker, string baseType, MethodDefinition method)
+        {
+            var fieldData = new List<FieldData>();
+            switch (baseType)
+            {
+                case Constants.ScriptableObjectTypeName:
+                case Constants.MonoBehaviourTypeName:
+                    // Fields:
+                    // GameObject(PTR)
+                    // Enabled
+                    // MonoScript(PTR)
+                    // Name
+                    fieldData.Add(new FieldData("GameObjectPtr", method.Module.ImportReference(AssetPtrType), "_" + baseType));
+                    fieldData.Add(new FieldData("Enabled", method.Module.TypeSystem.Boolean, "_" + baseType));
+                    fieldData.Add(new FieldData("MonoScriptPtr", method.Module.ImportReference(AssetPtrType), "_" + baseType));
+                    fieldData.Add(new FieldData("Name", method.Module.TypeSystem.String, "_" + baseType));
+
+                    break;
+            }
+            foreach (var f in fieldData)
+            {
+                var fDef = f.GetDefinition(method.DeclaringType);
+                WriteRead(worker, method, fDef);
+            }
+        }
+
         public static MethodDefinition GenerateReadMethod(List<FieldDefinition> fieldsToWrite, TypeDefinition thisType)
         {
             if (thisType.Methods.Any(item => item.Name == "ReadFrom" && item.IsStatic))
@@ -420,6 +457,7 @@ namespace DumpityLibrary
             // Reference: https://stackoverflow.com/questions/35948733/mono-cecil-method-and-instruction-insertion
             // Create constructor method:
             MethodDefinition method = new MethodDefinition("ReadFrom",  MethodAttributes.Public | MethodAttributes.Static, thisType);
+            thisType.Methods.Add(method);
             // Add parameters
             method.Parameters.Add(GetBinaryReaderParameter(thisType.Module));
             // Shouldn't need length, but just in case?
@@ -430,21 +468,18 @@ namespace DumpityLibrary
             // Create local object
             worker.Emit(OpCodes.Newobj, constructor);
 
+            // Only allows for shallow base classes (deep base classes don't get read/write methods created)
+            var temp = thisType.BaseType;
+            Console.WriteLine($"BaseType: {temp}");
+            GenerateReadUnityHeader(worker, temp.Name, method);
 
             foreach (var f in fieldsToWrite)
             {
-                if (IsPrimitive(f.FieldType))
-                {
-                    WriteReadPrimitive(worker, method, thisType, f);
-                } else
-                {
-                    WriteReadOther(worker, method, f);
-                }
+                WriteRead(worker, method, f);
             }
             worker.Emit(OpCodes.Ret);
             Console.WriteLine($"Added: {method} to type: {thisType}");
             Console.WriteLine("=================================COMPLETED READ METHOD=================================");
-            thisType.Methods.Add(method);
             return method;
         }
 
@@ -489,11 +524,11 @@ namespace DumpityLibrary
 
             foreach (TypeDefinition oldType in csharpDef.MainModule.GetTypes())
             {
-                if (oldType.FullName != "HMUI.TextSegmentedControlCellNew" && oldType.FullName != "HMUI.Toggle" 
-                    && oldType.FullName != "LevelPacksTableView" && oldType.FullName != "BeatmapLevelSO")
-                {
-                    continue;
-                }
+                //if (oldType.FullName != "HMUI.TextSegmentedControlCellNew" && oldType.FullName != "HMUI.Toggle" 
+                //    && oldType.FullName != "LevelPacksTableView" && oldType.FullName != "BeatmapLevelSO")
+                //{
+                //    continue;
+                //}
                 if (!oldType.IsClass || oldType.Name.StartsWith("<"))
                 {
                     Console.WriteLine($"Skipping {oldType} because it is not a class!");
@@ -542,7 +577,8 @@ namespace DumpityLibrary
             //var stream = new MemoryStream();
             //output.Write(stream);
             //File.WriteAllBytes(output.MainModule.Name, stream.ToArray());
-            hg.Write();
+            if (GenerateJakibakiHooks)
+                hg.Write();
             csharpDef.Name.Name = "Assembly-CSharp-modified";
             csharpDef.Write(csharpDef.Name.Name + ".dll");
         }
