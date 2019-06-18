@@ -176,7 +176,7 @@ namespace DumpityLibrary
                 {
                     continue;
                 }
-                StringBuilder b = new StringBuilder("MAKE_HOOK_NAT(");
+                StringBuilder b = new StringBuilder("MAKE_HOOK(");
                 b.Append(m.Name);
                 b.Append(", ");
                 b.Append(m.Offset);
@@ -247,7 +247,7 @@ namespace DumpityLibrary
             foreach (var m in hooks)
             {
                 writer.WriteLine("\tlog(\"Attempting to install hook: " + m.Name + " at offset: " + m.Offset + "\");");
-                writer.WriteLine("\tINSTALL_HOOK_NAT(" + m.Name + ");");
+                writer.WriteLine("\tINSTALL_HOOK(" + m.Name + ");");
             }
             writer.WriteLine("\tlog(\"Complete!\");");
             writer.WriteLine("}");
