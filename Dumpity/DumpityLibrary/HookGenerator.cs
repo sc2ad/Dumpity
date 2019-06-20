@@ -87,12 +87,14 @@ namespace DumpityLibrary
     public class HookGenerator
     {
         internal string FileName { get; }
+        internal string FileHeaderName { get; }
         internal List<MethodData> Methods { get; }
         internal List<StructData> Structs { get; private set; }
         private List<MethodData> Hooks { get; }
         public HookGenerator(string fName)
         {
             FileName = fName;
+            FileHeaderName = fName.Replace(".c", ".h");
             Methods = new List<MethodData>();
             Hooks = new List<MethodData>();
         }
@@ -164,18 +166,18 @@ namespace DumpityLibrary
                 Console.WriteLine("Using existing struct: " + existing.Name);
                 return existing;
             }
-            if (Structs.Find(sd => sd.Name == d.Name && sd.State == StructData.WritingState.Writing) != null)
-            {
-                // The struct we are trying to add is being written right now, we have to deal with circular some how
-                // In this case, we shall return null.
-                return null;
-            }
+            //if (Structs.Find(sd => sd.Name == d.Name && sd.State == StructData.WritingState.Writing) != null)
+            //{
+            //    // The struct we are trying to add is being written right now, we have to deal with circular some how
+            //    // In this case, we shall return null.
+            //    return null;
+            //}
             var st = new StructData(d);
             Console.WriteLine("Added Struct: " + st.Name);
             Structs.Add(st);
             return st;
         }
-        private void WriteHeader(StreamWriter writer)
+        private void WriteMainHeader(StreamWriter writer)
         {
             writer.Write(@"#include <android/log.h>
 #include <stdio.h>
@@ -191,7 +193,13 @@ namespace DumpityLibrary
 
 #include ""../beatsaber-hook/shared/inline-hook/inlineHook.h""
 #include ""../beatsaber-hook/shared/utils/utils.h""
+#include """ + FileHeaderName + @"""
 ");
+        }
+
+        private void WriteHeaderHeader(StreamWriter writer)
+        {
+            // Empty, for now.
         }
 
         private List<StructData> GetAllStructs()
@@ -226,7 +234,7 @@ namespace DumpityLibrary
             return d.IsEnum;
         }
 
-        private void WriteTypeToBuilder(string name, StreamWriter writer, TypeReference t, StringBuilder q, string suffix)
+        private void WriteTypeToBuilder(string name, StreamWriter writer_h, TypeReference t, StringBuilder q, string suffix)
         {
             if (IsPrimitive(t))
             {
@@ -254,31 +262,10 @@ namespace DumpityLibrary
                         //Console.WriteLine("Recurse WriteStruct... Adding and writing struct: " + fd.Name);
                         if (ValidateType(fd))
                         {
-                            var sd = AddStruct(fd);
-                            if (sd == null)
-                            {
-                                // The struct we are trying to write is already being written. We have a circlar problem.
-                                // For now, we shall just write a void* pointer until this is fixed at some point.
-                                // If it is a circular struct, I'm not sure how to handle it...
-                                Console.WriteLine("Found Struct that I am currently writing!");
-                                q.Append("void*");
-                                if (name.StartsWith("<"))
-                                {
-                                    q.Append(" " + name.Replace("<", "").Replace(">", "_") + suffix);
-                                }
-                                else
-                                {
-                                    q.Append(" " + name + suffix);
-                                }
-                                return;
-                            }
-                            else
-                            {
-                                WriteStruct(writer, sd);
-                            }
+                            WriteStruct(writer_h, AddStruct(fd));
                         }
                     }
-                    q.Append(GetTypeName(fd));
+                    q.Append((Structs.Find(sd => sd.Name == fd.Name) != null ? "struct " : "") + GetTypeName(fd));
                 }
             }
             if (name.StartsWith("<"))
@@ -299,8 +286,10 @@ namespace DumpityLibrary
                 return;
             }
             s.State = StructData.WritingState.Writing;
+            // Predefine
+            writer.WriteLine("struct " + s.Name + ";");
             StringBuilder b = new StringBuilder();
-            b.AppendLine("typedef struct __attribute__((__packed__)) {");
+            b.AppendLine("typedef struct __attribute__((__packed__)) " + s.Name + " {");
             // Assumes that there is always at least one field in the struct
             if (s.Fields == null || s.Fields.Count == 0)
             {
@@ -314,20 +303,29 @@ namespace DumpityLibrary
             foreach (var f in s.Fields)
             {
                 StringBuilder q = new StringBuilder("\t");
-
+                //if (!IsPrimitive(f.FieldType.Resolve()))
+                //{
+                //    Console.WriteLine("Struct: " + f.FieldType.Name);
+                //}
                 WriteTypeToBuilder(f.Name, writer, f.FieldType, q, ";");
+                // Slow
+                //var qt = q.ToString();
+                //if (IsEnum(f.FieldType.Resolve()) || qt.Contains("void*"))
+                //{
+                //    q.Replace("struct ", "");
+                //}
                 b.AppendLine(q.ToString());
             }
             writer.Write(b.ToString());
-            writer.WriteLine("} " + s.Name + ";");
+            writer.WriteLine("} " + s.Name + "_t;");
             s.State = StructData.WritingState.Written;
         }
 
-        private void WriteStructs(StreamWriter writer, List<StructData> structs)
+        private void WriteStructs(StreamWriter writer_h, List<StructData> structs)
         {
             for (int i = 0; i < structs.Count; i++)
             {
-                WriteStruct(writer, structs[i]);
+                WriteStruct(writer_h, structs[i]);
             }
         }
 
@@ -365,7 +363,7 @@ namespace DumpityLibrary
                 case "Byte":
                     return "char";
                 case "String":
-                    return "char*";
+                    return "cs_string";
                 default:
                     return name;
             }
@@ -376,7 +374,7 @@ namespace DumpityLibrary
             return GetPrimitiveName(type.Name) != type.Name;
         }
 
-        private void WriteHooks(StreamWriter writer, List<MethodData> methods)
+        private void WriteHooks(StreamWriter writer, StreamWriter writer_h, List<MethodData> methods)
         {
             foreach (var m in methods)
             {
@@ -392,7 +390,7 @@ namespace DumpityLibrary
                 b.Append(m.Offset);
                 b.Append(", ");
                 //b.Append(GetTypeName(m.Definition.ReturnType));
-                WriteTypeToBuilder("", writer, m.Definition.ReturnType, b, "");
+                WriteTypeToBuilder("", writer_h, m.Definition.ReturnType, b, "");
                 b.Length--; // Chop off trailing space
                 b.Replace("*", "", b.Length - 2, 2);
                 if (!m.Definition.ReturnType.IsPrimitive && !IsStruct(m.Definition.ReturnType.Resolve()) && !IsEnum(m.Definition.ReturnType.Resolve()))
@@ -412,13 +410,13 @@ namespace DumpityLibrary
                     //    // Then we know there is a matching struct!
                     //    //Console.WriteLine("Found written struct with name: " + sd.Name);
                     //}
-                    b.Append(GetTypeName(m.Definition.DeclaringType));
+                    b.Append("struct " + GetTypeName(m.Definition.DeclaringType));
                     b.Append(" self");
                 }
                 foreach (var p in m.Definition.Parameters)
                 {
                     b.Append(", ");
-                    WriteTypeToBuilder(p.Name, writer, p.ParameterType, b, "");
+                    WriteTypeToBuilder(p.Name, writer_h, p.ParameterType, b, "");
                 }
                 b.Append(") {\n");
                 // Line inside of hook
@@ -484,9 +482,13 @@ namespace DumpityLibrary
         {
             using (StreamWriter writer = new StreamWriter(FileName))
             {
-                WriteHeader(writer);
-                WriteStructs(writer, GetAllStructs());
-                WriteHooks(writer, Methods);
+                WriteMainHeader(writer);
+                using (StreamWriter writer_h = new StreamWriter(FileHeaderName))
+                {
+                    WriteHeaderHeader(writer_h);
+                    WriteStructs(writer_h, GetAllStructs());
+                    WriteHooks(writer, writer_h, Methods);
+                }
                 WriteInstallHooks(writer, Hooks);
             }
         }
