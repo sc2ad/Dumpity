@@ -21,27 +21,74 @@ namespace DumpityLibrary
     }
     class StructData
     {
-        internal List<FieldDefinition> Fields { get; }
-        internal TypeReference Type { get; }
-        internal string Name { get; }
-        public StructData(string name, TypeReference refer, List<FieldDefinition> fields)
+        internal enum WritingState
         {
-            Name = name;
-            Type = refer;
-            Fields = fields;
+            UnWritten,
+            Writing,
+            Written
         }
+        internal List<FieldDefinition> Fields { get; }
+        internal TypeDefinition Type { get; }
+        internal string Name { get; }
+        internal WritingState State { get; set; }
+        internal bool IsStruct { get; }
+        internal bool IsEnum { get; }
+        internal string TypeName
+        { get
+            {
+                if (IsStruct)
+                    return Name;
+                if (IsEnum)
+                    return "int";
+                return Name + "*";
+            }
+        }
+
         public StructData(TypeDefinition def)
         {
             Name = def.Name;
             Type = def;
-            Fields = def.Fields.ToArray().ToList();
+            Fields = new List<FieldDefinition>();
+            foreach (var f in def.Fields)
+            {
+                if (f.IsStatic || f.IsSpecialName || f.Constant != null)
+                {
+                    continue;
+                }
+                bool cont = false;
+                foreach (string suff in Constants.ForbiddenSuffixes)
+                {
+                    if (f.Name.EndsWith(suff))
+                    {
+                        cont = true;
+                        break;
+                    }
+                }
+                if (cont)
+                    continue;
+                Fields.Add(f);
+            }
+            State = WritingState.UnWritten;
+            IsEnum = Type.IsEnum;
+            IsStruct = Type.IsValueType && Type.HasFields && !Type.IsArray && !IsEnum;
+        }
+
+        public override bool Equals(object obj)
+        {
+            return obj is StructData data &&
+                   Name == data.Name;
+        }
+
+        public override int GetHashCode()
+        {
+            return 539060726 + EqualityComparer<string>.Default.GetHashCode(Name);
         }
     }
     public class HookGenerator
     {
         internal string FileName { get; }
         internal List<MethodData> Methods { get; }
-        internal HashSet<StructData> Structs { get; private set; }
+        internal List<StructData> Structs { get; private set; }
         private List<MethodData> Hooks { get; }
         public HookGenerator(string fName)
         {
@@ -49,17 +96,29 @@ namespace DumpityLibrary
             Methods = new List<MethodData>();
             Hooks = new List<MethodData>();
         }
-        public void Add(TypeDefinition def)
+        public bool ValidateType(TypeDefinition def)
         {
             if (def.FullName.Contains("System"))
             {
                 // Don't add default type methods
-                return;
+                return false;
             }
-            if (def.IsGenericInstance || def.IsGenericParameter || def.ContainsGenericParameter || !def.IsClass || !def.Fields.Any(f => f.CustomAttributes.Count >= 1 
+            if (IsStruct(def))
+            {
+                return true;
+            }
+            if (def.IsGenericInstance || def.IsGenericParameter || def.ContainsGenericParameter || !def.IsClass || !def.Fields.Any(f => f.CustomAttributes.Count >= 1
             && f.CustomAttributes[0].Fields.Count == 1 && f.CustomAttributes[0].Fields[0].Name == "Offset"))
             {
                 // Don't add generics, or anything that doesn't have a FieldOffset custom attribute
+                return false;
+            }
+            return true;
+        }
+        public void Add(TypeDefinition def)
+        {
+            if (!ValidateType(def))
+            {
                 return;
             }
             foreach (var m in def.Methods)
@@ -97,6 +156,25 @@ namespace DumpityLibrary
                 }
             }
         }
+        private StructData AddStruct(TypeDefinition d)
+        {
+            var existing = Structs.Find(sd => sd.Name == d.Name && sd.State == StructData.WritingState.Written);
+            if (existing != null)
+            {
+                Console.WriteLine("Using existing struct: " + existing.Name);
+                return existing;
+            }
+            if (Structs.Find(sd => sd.Name == d.Name && sd.State == StructData.WritingState.Writing) != null)
+            {
+                // The struct we are trying to add is being written right now, we have to deal with circular some how
+                // In this case, we shall return null.
+                return null;
+            }
+            var st = new StructData(d);
+            Console.WriteLine("Added Struct: " + st.Name);
+            Structs.Add(st);
+            return st;
+        }
         private void WriteHeader(StreamWriter writer)
         {
             writer.Write(@"#include <android/log.h>
@@ -116,11 +194,11 @@ namespace DumpityLibrary
 ");
         }
 
-        private HashSet<StructData> GetAllStructs()
+        private List<StructData> GetAllStructs()
         {
             if (Structs == null)
             {
-                Structs = new HashSet<StructData>();
+                Structs = new List<StructData>();
                 foreach (var method in Methods)
                 {
                     if (!method.Definition.IsStatic)
@@ -129,7 +207,7 @@ namespace DumpityLibrary
                         if (Structs.FirstOrDefault(sd => sd.Name == method.Definition.DeclaringType.Name) == null)
                         {
                             // Add the struct if there are no existing matches
-                            Structs.Add(new StructData(method.Definition.DeclaringType));
+                            AddStruct(method.Definition.DeclaringType);
                         }
                     }
                 }
@@ -138,61 +216,119 @@ namespace DumpityLibrary
             return Structs;
         }
 
-        private void WriteStructs(StreamWriter writer, HashSet<StructData> structs)
+        private bool IsStruct(TypeDefinition d)
         {
-            foreach (var s in structs)
+            return d.IsValueType && d.HasFields && !d.IsArray && !IsEnum(d);
+        }
+
+        private bool IsEnum(TypeDefinition d)
+        {
+            return d.IsEnum;
+        }
+
+        private void WriteTypeToBuilder(string name, StreamWriter writer, TypeReference t, StringBuilder q, string suffix)
+        {
+            if (IsPrimitive(t))
             {
-                writer.WriteLine("typedef struct __attribute__((__packed__)) {");
-                // Assumes that there is always at least one field in the struct
-                var fields = GetValidFields(s);
-                writer.WriteLine("\tchar _unused_data_useless[" + GetFieldOffset(fields.First()) + "];\n");
-                foreach (var f in fields)
+                // If the field is primitive, write it.
+                q.Append(GetPrimitiveName(t.Name));
+            }
+            else
+            {
+                // Otherwise...
+                var fd = t.Resolve();
+                if (!ValidateType(fd))
                 {
-                    bool bk = false;
-                    foreach (string str in Constants.ForbiddenSuffixes)
+                    q.Append("void*");
+                }
+                else if (IsEnum(fd))
+                {
+                    // If the field is an enum, write it as an int
+                    q.Append("int");
+                }
+                else
+                {
+                    if (Structs.Find(sd => sd.Name == fd.Name) == null)
                     {
-                        if (f.Name.EndsWith(str))
+                        // There is no matching struct with this name
+                        //Console.WriteLine("Recurse WriteStruct... Adding and writing struct: " + fd.Name);
+                        if (ValidateType(fd))
                         {
-                            // Skip writing it
-                            bk = true;
-                            break;
+                            var sd = AddStruct(fd);
+                            if (sd == null)
+                            {
+                                // The struct we are trying to write is already being written. We have a circlar problem.
+                                // For now, we shall just write a void* pointer until this is fixed at some point.
+                                // If it is a circular struct, I'm not sure how to handle it...
+                                Console.WriteLine("Found Struct that I am currently writing!");
+                                q.Append("void*");
+                                if (name.StartsWith("<"))
+                                {
+                                    q.Append(" " + name.Replace("<", "").Replace(">", "_") + suffix);
+                                }
+                                else
+                                {
+                                    q.Append(" " + name + suffix);
+                                }
+                                return;
+                            }
+                            else
+                            {
+                                WriteStruct(writer, sd);
+                            }
                         }
                     }
-                    if (bk)
-                        continue;
-                    StringBuilder b = new StringBuilder("\t");
-                    if (f.FieldType.IsPrimitive)
-                    {
-                        b.Append(GetPrimitiveName(f.FieldType.Name));
-                    } else
-                    {
-                        b.Append("void*");
-                    }
-                    if (f.Name.StartsWith("<"))
-                    {
-                        b.Append(" " + f.Name.Replace("<", "").Replace(">", "_") + ";");
-                    } else
-                    {
-                        b.Append(" " + f.Name + ";");
-                    }
-                    writer.WriteLine(b.ToString());
+                    q.Append(GetTypeName(fd));
                 }
-                writer.WriteLine("} " + s.Name + ";");
+            }
+            if (name.StartsWith("<"))
+            {
+                q.Append(" " + name.Replace("<", "").Replace(">", "_") + suffix);
+            }
+            else
+            {
+                q.Append(" " + name + suffix);
             }
         }
 
-        private List<FieldDefinition> GetValidFields(StructData s)
+        private void WriteStruct(StreamWriter writer, StructData s)
         {
-            var fields = new List<FieldDefinition>();
+            if (Structs.Find(sd => sd.Name == s.Name && sd.State == StructData.WritingState.Written) != null)
+            {
+                // Already wrote this struct.
+                return;
+            }
+            s.State = StructData.WritingState.Writing;
+            StringBuilder b = new StringBuilder();
+            b.AppendLine("typedef struct __attribute__((__packed__)) {");
+            // Assumes that there is always at least one field in the struct
+            if (s.Fields == null || s.Fields.Count == 0)
+            {
+                Structs.Remove(s);
+                return;
+            }
+            if (!s.Type.IsValueType)
+            {
+                b.AppendLine("\tchar _unused_data_useless[" + GetFieldOffset(s.Fields.First()) + "];\n");
+            }
             foreach (var f in s.Fields)
             {
-                if (f.IsStatic || f.IsSpecialName || f.Constant != null)
-                {
-                    continue;
-                }
-                fields.Add(f);
+                StringBuilder q = new StringBuilder("\t");
+
+                WriteTypeToBuilder(f.Name, writer, f.FieldType, q, ";");
+                b.AppendLine(q.ToString());
             }
-            return fields;
+            writer.Write(b.ToString());
+            writer.WriteLine("} " + s.Name + ";");
+            s.State = StructData.WritingState.Written;
+        }
+
+        private void WriteStructs(StreamWriter writer, List<StructData> structs)
+        {
+            for (int i = 0; i < structs.Count; i++)
+            {
+                WriteStruct(writer, structs[i]);
+            }
         }
 
         private string GetFieldOffset(FieldDefinition f)
@@ -226,23 +362,18 @@ namespace DumpityLibrary
                     return "char";
                 case "Double":
                     return "double";
+                case "Byte":
+                    return "char";
+                case "String":
+                    return "char*";
                 default:
                     return name;
             }
         }
 
-        private string GetTypeName(TypeReference type)
+        private bool IsPrimitive(TypeReference type)
         {
-            if (!type.IsPrimitive)
-            {
-                var temp = Structs.FirstOrDefault(s => s.Name == type.Name);
-                if (temp == null)
-                {
-                    return "void";
-                }
-                return temp.Name;
-            }
-            return GetPrimitiveName(type.Name);
+            return GetPrimitiveName(type.Name) != type.Name;
         }
 
         private void WriteHooks(StreamWriter writer, List<MethodData> methods)
@@ -253,36 +384,41 @@ namespace DumpityLibrary
                 {
                     continue;
                 }
+                Console.WriteLine("Writing hooks for method: " + m.Name);
+
                 StringBuilder b = new StringBuilder("MAKE_HOOK(");
                 b.Append(m.Name);
                 b.Append(", ");
                 b.Append(m.Offset);
                 b.Append(", ");
-                b.Append(GetTypeName(m.Definition.ReturnType));
+                //b.Append(GetTypeName(m.Definition.ReturnType));
+                WriteTypeToBuilder("", writer, m.Definition.ReturnType, b, "");
+                b.Length--; // Chop off trailing space
+                b.Replace("*", "", b.Length - 2, 2);
+                if (!m.Definition.ReturnType.IsPrimitive && !IsStruct(m.Definition.ReturnType.Resolve()) && !IsEnum(m.Definition.ReturnType.Resolve()))
+                {
+                    if (m.Definition.ReturnType.MetadataType != MetadataType.Void)
+                    {
+                        b.Append("*");
+                    }
+                }
                 if (!m.Definition.IsStatic)
                 {
                     // Non static method needs "self" as first parameter
                     b.Append(", ");
-                    if (Structs.FirstOrDefault(a => a.Name == m.Definition.DeclaringType.Name) != null)
-                    {
-                        // Then we know there is a matching struct!
-                        Console.WriteLine("Found written struct with name: " + m.Definition.DeclaringType.Name);
-                    }
+                    //var sd = Structs.FirstOrDefault(a => a.Name == m.Definition.DeclaringType.Name);
+                    //if (sd != null)
+                    //{
+                    //    // Then we know there is a matching struct!
+                    //    //Console.WriteLine("Found written struct with name: " + sd.Name);
+                    //}
                     b.Append(GetTypeName(m.Definition.DeclaringType));
                     b.Append(" self");
                 }
                 foreach (var p in m.Definition.Parameters)
                 {
                     b.Append(", ");
-                    if (!p.ParameterType.IsPrimitive)
-                    {
-                        b.Append(GetTypeName(p.ParameterType) + "*");
-                    } else
-                    {
-                        b.Append(GetTypeName(p.ParameterType));
-                    }
-                    b.Append(" ");
-                    b.Append(p.Name);
+                    WriteTypeToBuilder(p.Name, writer, p.ParameterType, b, "");
                 }
                 b.Append(") {\n");
                 // Line inside of hook
@@ -316,6 +452,20 @@ namespace DumpityLibrary
                 writer.Write(b.ToString());
                 Hooks.Add(m);
             }
+        }
+
+        private string GetTypeName(TypeDefinition type)
+        {
+            if (!IsPrimitive(type))
+            {
+                var temp = Structs.Find(s => s.Name == type.Name);
+                if (temp == null)
+                {
+                    return "void*";
+                }
+                return temp.TypeName;
+            }
+            return GetPrimitiveName(type.Name);
         }
 
         private void WriteInstallHooks(StreamWriter writer, List<MethodData> hooks)
