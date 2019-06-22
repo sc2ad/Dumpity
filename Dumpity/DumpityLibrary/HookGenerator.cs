@@ -33,13 +33,13 @@ namespace DumpityLibrary
         internal WritingState State { get; set; }
         internal bool IsStruct { get; }
         internal bool IsEnum { get; }
+        internal bool IsClass { get; }
         internal string TypeName
-        { get
+        {
+            get
             {
-                if (IsStruct)
+                if (IsStruct || IsEnum)
                     return Name;
-                if (IsEnum)
-                    return "int";
                 return Name + "*";
             }
         }
@@ -48,12 +48,19 @@ namespace DumpityLibrary
         {
             Name = def.Name.Replace("`", "_").Replace("<", "").Replace(">", "_");
             Type = def;
+            State = WritingState.UnWritten;
+            IsEnum = Type.IsEnum;
+            IsStruct = Type.IsValueType && Type.HasFields && !Type.IsArray && !IsEnum;
+            IsClass = Type.IsClass && !IsEnum && !IsStruct;
             Fields = new List<FieldDefinition>();
             foreach (var f in def.Fields)
             {
-                if (f.IsStatic || f.IsSpecialName || f.Constant != null)
+                if (!IsEnum)
                 {
-                    continue;
+                    if (f.IsStatic || f.IsSpecialName || f.Constant != null)
+                    {
+                        continue;
+                    }
                 }
                 bool cont = false;
                 foreach (string suff in Constants.ForbiddenSuffixes)
@@ -68,10 +75,6 @@ namespace DumpityLibrary
                     continue;
                 Fields.Add(f);
             }
-            State = WritingState.UnWritten;
-            IsEnum = Type.IsEnum;
-            IsStruct = Type.IsValueType && Type.HasFields && !Type.IsArray && !IsEnum;
-            Console.WriteLine("Struct: " + Name + " IsStruct: " + IsStruct);
         }
 
         public override bool Equals(object obj)
@@ -272,7 +275,13 @@ namespace DumpityLibrary
                             WriteStruct(writer_h, AddStruct(fd));
                         }
                     }
-                    q.Append((Structs.Find(sd => sd.Name == fd.Name) != null ? "struct " : "") + GetTypeName(fd));
+                    var matchName = Structs.Find(sd => sd.Name == fd.Name);
+                    string o = "";
+                    if (matchName != null && (matchName.IsStruct || matchName.IsClass))
+                        o = "struct ";
+                    else if (matchName != null && matchName.IsEnum)
+                        o = "enum ";
+                    q.Append(o + GetTypeName(fd));
                 }
             }
             if (name.StartsWith("<"))
@@ -293,40 +302,55 @@ namespace DumpityLibrary
                 return;
             }
             s.State = StructData.WritingState.Writing;
+            StringBuilder b = new StringBuilder();
             // Predefine
             if (s.IsEnum)
-                writer.WriteLine("enum " + s.Name + ";");
-            writer.WriteLine("struct " + s.Name + ";");
-            StringBuilder b = new StringBuilder();
-            b.AppendLine("typedef struct __attribute__((__packed__)) " + s.Name + " {");
-            // Assumes that there is always at least one field in the struct
-            if (s.Fields == null || s.Fields.Count == 0)
             {
-                Structs.Remove(s);
-                return;
+                // Never need to predefine for enums, they are always just literal
+                b.AppendLine("enum " + s.Name + " {");
+                foreach (var f in s.Fields)
+                {
+                    // Specially named to avoid enum conflicts (because global namespace)
+                    b.AppendLine("\t" + s.Name + "_" + f.Name + ",");
+                }
+                b.Length -= 3;
+                b.AppendLine("\n};");
+                writer.Write(b.ToString());
             }
-            if (!s.Type.IsValueType)
+            else
             {
-                b.AppendLine("\tchar _unused_data_useless[" + GetFieldOffset(s.Fields.First()) + "];\n");
+                if (s.Fields == null || s.Fields.Count == 0)
+                {
+                    Structs.Remove(s);
+                    return;
+                }
+                writer.WriteLine("struct " + s.Name + ";");
+                b.AppendLine("typedef struct __attribute__((__packed__)) " + s.Name + " {");
+                // Assumes that there is always at least one field in the struct
+                if (!s.Type.IsValueType)
+                {
+                    b.AppendLine("\tchar _unused_data_useless[" + GetFieldOffset(s.Fields.First()) + "];\n");
+                }
+                foreach (var f in s.Fields)
+                {
+                    StringBuilder q = new StringBuilder("\t");
+                    //if (!IsPrimitive(f.FieldType.Resolve()))
+                    //{
+                    //    Console.WriteLine("Struct: " + f.FieldType.Name);
+                    //}
+                    WriteTypeToBuilder(f.Name, writer, f.FieldType, q, ";");
+                    // Slow
+                    //var qt = q.ToString();
+                    //if (IsEnum(f.FieldType.Resolve()) || qt.Contains("void*"))
+                    //{
+                    //    q.Replace("struct ", "");
+                    //}
+                    b.AppendLine(q.ToString());
+                }
+                writer.Write(b.ToString());
+                writer.WriteLine("} " + s.Name + "_t;");
             }
-            foreach (var f in s.Fields)
-            {
-                StringBuilder q = new StringBuilder("\t");
-                //if (!IsPrimitive(f.FieldType.Resolve()))
-                //{
-                //    Console.WriteLine("Struct: " + f.FieldType.Name);
-                //}
-                WriteTypeToBuilder(f.Name, writer, f.FieldType, q, ";");
-                // Slow
-                //var qt = q.ToString();
-                //if (IsEnum(f.FieldType.Resolve()) || qt.Contains("void*"))
-                //{
-                //    q.Replace("struct ", "");
-                //}
-                b.AppendLine(q.ToString());
-            }
-            writer.Write(b.ToString());
-            writer.WriteLine("} " + s.Name + "_t;");
+            
             s.State = StructData.WritingState.Written;
         }
 

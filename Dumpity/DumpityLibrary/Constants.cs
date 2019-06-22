@@ -9,11 +9,13 @@ namespace DumpityLibrary
         public const string MonoBehaviourTypeName = "MonoBehaviour";
         public const string ScriptableObjectTypeName = "ScriptableObject";
         public const string AssetPtrTypeName = "Ptr";
+        public const string EnumValueSuffix = "value__";
         public static readonly List<string> ForbiddenSuffixes = new List<string>()
         {
             MonoBehaviourTypeName,
             ScriptableObjectTypeName,
             AssetPtrTypeName,
+            EnumValueSuffix,
         };
     }
 }

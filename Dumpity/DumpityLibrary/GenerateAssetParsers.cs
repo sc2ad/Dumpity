@@ -18,7 +18,7 @@ namespace DumpityLibrary
         public static Type AssetPtrType { get; private set; }
         public static TypeDefinition SerializeFieldAttr { get; private set; }
         public static bool GenerateJakibakiHooks { get; set; } = true;
-        public static string JakibakiHooksFile { get; set; } = @"hooks.c";
+        public static string JakibakiHooksFile { get; set; } = @"main.c";
 
         public static List<FieldDefinition> FindSerializedData(TypeDefinition def)
         {
