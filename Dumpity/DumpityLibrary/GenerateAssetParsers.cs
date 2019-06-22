@@ -524,7 +524,7 @@ namespace DumpityLibrary
 
             foreach (TypeDefinition oldType in csharpDef.MainModule.GetTypes())
             {
-                //if (oldType.FullName != "HMUI.TextSegmentedControlCellNew" && oldType.FullName != "HMUI.Toggle" 
+                //if (oldType.FullName != "HMUI.TextSegmentedControlCellNew" && oldType.FullName != "HMUI.Toggle"
                 //    && oldType.FullName != "LevelPacksTableView" && oldType.FullName != "BeatmapLevelSO")
                 //{
                 //    continue;

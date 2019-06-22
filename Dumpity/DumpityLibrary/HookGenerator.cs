@@ -46,7 +46,7 @@ namespace DumpityLibrary
 
         public StructData(TypeDefinition def)
         {
-            Name = def.Name;
+            Name = def.Name.Replace("`", "_").Replace("<", "").Replace(">", "_");
             Type = def;
             Fields = new List<FieldDefinition>();
             foreach (var f in def.Fields)
@@ -71,6 +71,7 @@ namespace DumpityLibrary
             State = WritingState.UnWritten;
             IsEnum = Type.IsEnum;
             IsStruct = Type.IsValueType && Type.HasFields && !Type.IsArray && !IsEnum;
+            Console.WriteLine("Struct: " + Name + " IsStruct: " + IsStruct);
         }
 
         public override bool Equals(object obj)
@@ -100,6 +101,10 @@ namespace DumpityLibrary
         }
         public bool ValidateType(TypeDefinition def)
         {
+            if (def == null || def.FullName == null)
+            {
+                return false;
+            }
             if (def.FullName.Contains("System"))
             {
                 // Don't add default type methods
@@ -249,13 +254,15 @@ namespace DumpityLibrary
                 {
                     q.Append("void*");
                 }
-                else if (IsEnum(fd))
-                {
-                    // If the field is an enum, write it as an int
-                    q.Append("int");
-                }
+                //else if (IsEnum(fd))
+                //{
+                //    // If the field is an enum, write it as an enum.
+
+                //    q.Append("int");
+                //}
                 else
                 {
+                    // Also includes enums
                     if (Structs.Find(sd => sd.Name == fd.Name) == null)
                     {
                         // There is no matching struct with this name
@@ -287,6 +294,8 @@ namespace DumpityLibrary
             }
             s.State = StructData.WritingState.Writing;
             // Predefine
+            if (s.IsEnum)
+                writer.WriteLine("enum " + s.Name + ";");
             writer.WriteLine("struct " + s.Name + ";");
             StringBuilder b = new StringBuilder();
             b.AppendLine("typedef struct __attribute__((__packed__)) " + s.Name + " {");
@@ -363,7 +372,7 @@ namespace DumpityLibrary
                 case "Byte":
                     return "char";
                 case "String":
-                    return "cs_string";
+                    return "cs_string*";
                 default:
                     return name;
             }
