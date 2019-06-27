@@ -390,7 +390,7 @@ namespace DumpityLibrary
                 case "Int64":
                     return "long";
                 case "Char":
-                    return "char";
+                    return "wchar_t";
                 case "Double":
                     return "double";
                 case "Byte":

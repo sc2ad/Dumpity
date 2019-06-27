@@ -483,23 +483,34 @@ namespace DumpityLibrary
             return method;
         }
 
-        public static void Test()
+        public static void Test(string ilcppDumpAssemblies = ".", string OutDirectory = "")
         {
-            AssemblyDefinition unityDef = AssemblyDefinition.ReadAssembly("UnityEngine.CoreModule.dll");
-            var attr = unityDef.MainModule.GetType("UnityEngine.SerializeField");
-            Console.WriteLine($"Serialize Field: {attr}");
+            ReaderType = typeof(CustomBinaryReader);
+            AssetPtrType = typeof(AssetPtr);
 
-            AssemblyDefinition csharpDef = AssemblyDefinition.ReadAssembly("Assembly-CSharp.dll");
-            var stringType = csharpDef.MainModule.TypeSystem.String;
+            var assemblies = new List<AssemblyDefinition>();
+            foreach (var p in Directory.GetFiles(ilcppDumpAssemblies))
+            {
+                var assemb = AssemblyDefinition.ReadAssembly(p);
+                assemblies.Add(assemb);
+                if (p.EndsWith("UnityEngine.CoreModule.dll"))
+                {
+                    SerializeFieldAttr = assemb.MainModule.GetType("UnityEngine.SerializeField");
+                    Console.WriteLine($"Serialize Field: {SerializeFieldAttr}");
+                }
+                if (p.EndsWith("Assembly-CSharp.dll"))
+                {
+                    var stringType = assemb.MainModule.TypeSystem.String;
+                    Console.WriteLine($"String Field: {stringType}");
+                }
+            }
+
             var resolver = new CustomAssemblyResolver();
             var moduleParameters = new ModuleParameters
             {
                 Kind = ModuleKind.Dll,
                 AssemblyResolver = resolver
             };
-            ReaderType = typeof(CustomBinaryReader);
-            AssetPtrType = typeof(AssetPtr);
-            SerializeFieldAttr = attr;
 
             //var newName = new AssemblyNameDefinition("Assembly-CSharp-modified", new Version("1.0.0"));
             //AssemblyDefinition output = AssemblyDefinition.CreateAssembly(newName, "Assembly-CSharp-modified.dll", moduleParameters);
@@ -520,58 +531,63 @@ namespace DumpityLibrary
             //var simpleColor = csharpDef.MainModule.GetType("SimpleColorSO");
             //var cMangager = csharpDef.MainModule.GetType("ColorManager");
 
-            var hg = new HookGenerator(JakibakiHooksFile);
+            var hg = new HookGenerator(Path.Combine(OutDirectory, JakibakiHooksFile));
 
-            foreach (TypeDefinition oldType in csharpDef.MainModule.GetTypes())
+            foreach (var assemb in assemblies)
             {
-                //if (oldType.FullName != "HMUI.TextSegmentedControlCellNew" && oldType.FullName != "HMUI.Toggle"
-                //    && oldType.FullName != "LevelPacksTableView" && oldType.FullName != "BeatmapLevelSO")
-                //{
-                //    continue;
-                //}
-                if (!oldType.IsClass || oldType.Name.StartsWith("<"))
+                foreach (TypeDefinition oldType in assemb.MainModule.GetTypes())
                 {
-                    Console.WriteLine($"Skipping {oldType} because it is not a class!");
-                    continue;
+                    //if (oldType.FullName != "HMUI.TextSegmentedControlCellNew" && oldType.FullName != "HMUI.Toggle"
+                    //    && oldType.FullName != "LevelPacksTableView" && oldType.FullName != "BeatmapLevelSO")
+                    //{
+                    //    continue;
+                    //}
+                    if (!oldType.IsClass || oldType.Name.StartsWith("<"))
+                    {
+                        Console.WriteLine($"Skipping {oldType} because it is not a class!");
+                        continue;
+                    }
+                    List<FieldDefinition> serialized = FindSerializedData(oldType);
+                    if (serialized.Count == 0)
+                    {
+                        Console.WriteLine($"Skipping {oldType} because it has no serializable fields!");
+                        continue;
+                    }
+
+                    //var newType = new TypeDefinition(oldType.Namespace, oldType.Name, oldType.Attributes);
+
+                    //// Populate all fields of the newType from the old type
+                    //foreach (var f in oldType.Fields)
+                    //{
+                    //    newType.Fields.Add(new FieldDefinition(f.Name, f.Attributes, f.FieldType));
+                    //}
+
+                    Console.WriteLine("====================================STARTING TYPE=========================================");
+                    Console.WriteLine($"Type Name: {oldType}");
+                    foreach (var f in serialized)
+                    {
+                        Console.WriteLine($"Serializable Field: {f}");
+                    }
+                    GenerateReadMethod(serialized, oldType);
+                    Console.WriteLine($"Adding type: {oldType} to the set of types");
+
+                    if (GenerateJakibakiHooks)
+                    {
+                        hg.Add(oldType);
+                    }
+
+                    //if (moduleDef.Types.ToList().Find(t => t.FullName == oldType.FullName) == null)
+                    //    moduleDef.Types.Add(oldType);
+                    //var q = Console.ReadKey();
+                    //if (q.Key == ConsoleKey.Q)
+                    //{
+                    //    // End!
+                    //    csharpDef.Write("Assembly-CSharp-modified-BeatmapLevelSO.dll");
+                    //    return;
+                    //}
                 }
-                List<FieldDefinition> serialized = FindSerializedData(oldType);
-                if (serialized.Count == 0)
-                {
-                    Console.WriteLine($"Skipping {oldType} because it has no serializable fields!");
-                    continue;
-                }
-
-                //var newType = new TypeDefinition(oldType.Namespace, oldType.Name, oldType.Attributes);
-
-                //// Populate all fields of the newType from the old type
-                //foreach (var f in oldType.Fields)
-                //{
-                //    newType.Fields.Add(new FieldDefinition(f.Name, f.Attributes, f.FieldType));
-                //}
-
-                Console.WriteLine("====================================STARTING TYPE=========================================");
-                Console.WriteLine($"Type Name: {oldType}");
-                foreach (var f in serialized)
-                {
-                    Console.WriteLine($"Serializable Field: {f}");
-                }
-                GenerateReadMethod(serialized, oldType);
-                Console.WriteLine($"Adding type: {oldType} to the set of types");
-
-                if (GenerateJakibakiHooks)
-                {
-                    hg.Add(oldType);
-                }
-
-                //if (moduleDef.Types.ToList().Find(t => t.FullName == oldType.FullName) == null)
-                //    moduleDef.Types.Add(oldType);
-                //var q = Console.ReadKey();
-                //if (q.Key == ConsoleKey.Q)
-                //{
-                //    // End!
-                //    csharpDef.Write("Assembly-CSharp-modified-BeatmapLevelSO.dll");
-                //    return;
-                //}
+                assemb.Name.Name = "Assembly-CSharp-modified";
+                assemb.Write(Path.Combine(OutDirectory, assemb.Name.Name + ".dll"));
             }
             //Console.WriteLine($"Writing assembly: {output.MainModule.Name}");
             //var stream = new MemoryStream();
@@ -579,8 +595,6 @@ namespace DumpityLibrary
             //File.WriteAllBytes(output.MainModule.Name, stream.ToArray());
             if (GenerateJakibakiHooks)
                 hg.Write();
-            csharpDef.Name.Name = "Assembly-CSharp-modified";
-            csharpDef.Write(csharpDef.Name.Name + ".dll");
         }
 
         public static void WriteWriteToMethod(TypeDefinition type, Type serializeFieldAttr)
