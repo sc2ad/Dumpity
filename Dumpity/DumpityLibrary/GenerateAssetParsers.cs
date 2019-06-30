@@ -193,7 +193,7 @@ namespace DumpityLibrary
             worker.Emit(OpCodes.Dup);
             // Put Reader onto stack
             worker.Emit(OpCodes.Ldarg, method.Parameters[0]);
-            // Call reader.ReadAlignedString
+            // Call new AssetPtr(reader)
             worker.Append(callCode);
             // Set the field of the object 
             worker.Emit(OpCodes.Stfld, f);
@@ -207,8 +207,6 @@ namespace DumpityLibrary
             worker.Emit(OpCodes.Dup);
             // Put Reader onto stack
             worker.Emit(OpCodes.Ldarg, method.Parameters[0]);
-            // Put length onto stack
-            worker.Emit(OpCodes.Ldc_I4_0);
             // Call SomeObject.ReadFrom()
             worker.Append(callCode);
             // Set the field of the object 
@@ -278,9 +276,11 @@ namespace DumpityLibrary
                         worker.Emit(OpCodes.Call, m);
                         // Set field
                         worker.Emit(OpCodes.Stfld, f.Module.ImportReference(field));
-                    } else
+                    } else if (field.FieldType.MetadataType == MetadataType.Class)
                     {
-                        throw new Exception("Field in struct is unknown!");
+                        var m = GenerateReadMethod(FindSerializedData(field.FieldType.Resolve()), field.FieldType.Resolve());
+                        f.Module.ImportReference(field.FieldType);
+                        WriteReadClass(worker, method, field.Resolve(), m);
                     }
                 }
             }
@@ -391,11 +391,6 @@ namespace DumpityLibrary
             return new ParameterDefinition("reader", Mono.Cecil.ParameterAttributes.None, def.ImportReference(typeof(CustomBinaryReader)));
         }
 
-        public static ParameterDefinition GetLengthParameter(ModuleDefinition def)
-        {
-            return new ParameterDefinition("length", Mono.Cecil.ParameterAttributes.None, def.ImportReference(typeof(int)));
-        }
-
         public static MethodDefinition GetConstructor(TypeDefinition def)
         {
             foreach (var m in def.Methods)
@@ -461,7 +456,6 @@ namespace DumpityLibrary
             // Add parameters
             method.Parameters.Add(GetBinaryReaderParameter(thisType.Module));
             // Shouldn't need length, but just in case?
-            method.Parameters.Add(GetLengthParameter(thisType.Module));
             ILProcessor worker = method.Body.GetILProcessor();
 
             var constructor = GetConstructor(thisType);
@@ -485,12 +479,20 @@ namespace DumpityLibrary
 
         public static void Test(string ilcppDumpAssemblies = ".", string OutDirectory = "")
         {
+            Config mainConfig = new Config()
+            {
+                Verbose = false,
+                AssetsConfig = new GenerateAssetsConfig(false),
+                HookConfig = new HookDumpConfig(Path.Combine(OutDirectory, JakibakiHooksFile), false)
+            };
             ReaderType = typeof(CustomBinaryReader);
             AssetPtrType = typeof(AssetPtr);
 
             var assemblies = new List<AssemblyDefinition>();
             foreach (var p in Directory.GetFiles(ilcppDumpAssemblies))
             {
+                if (!p.EndsWith(".dll"))
+                    continue;
                 var assemb = AssemblyDefinition.ReadAssembly(p);
                 assemblies.Add(assemb);
                 if (p.EndsWith("UnityEngine.CoreModule.dll"))
@@ -505,33 +507,9 @@ namespace DumpityLibrary
                 }
             }
 
-            var resolver = new CustomAssemblyResolver();
-            var moduleParameters = new ModuleParameters
-            {
-                Kind = ModuleKind.Dll,
-                AssemblyResolver = resolver
-            };
+            Directory.SetCurrentDirectory(ilcppDumpAssemblies);
 
-            //var newName = new AssemblyNameDefinition("Assembly-CSharp-modified", new Version("1.0.0"));
-            //AssemblyDefinition output = AssemblyDefinition.CreateAssembly(newName, "Assembly-CSharp-modified.dll", moduleParameters);
-            //resolver.Register(output);
-            //var moduleDef = output.MainModule;
-
-            //moduleDef.Types.Clear();
-
-            //foreach (var f in Directory.GetFiles(Directory.GetCurrentDirectory(), "*.dll"))
-            //{
-            //    if (f.EndsWith(".dll"))
-            //    {
-            //        AssemblyDefinition.ReadAssembly(f);
-            //    }
-            //}
-
-            //var type = csharpDef.MainModule.GetType("BeatmapLevelSO");
-            //var simpleColor = csharpDef.MainModule.GetType("SimpleColorSO");
-            //var cMangager = csharpDef.MainModule.GetType("ColorManager");
-
-            var hg = new HookGenerator(Path.Combine(OutDirectory, JakibakiHooksFile));
+            var hg = new HookGenerator(mainConfig.HookConfig);
 
             foreach (var assemb in assemblies)
             {
@@ -550,7 +528,8 @@ namespace DumpityLibrary
                     List<FieldDefinition> serialized = FindSerializedData(oldType);
                     if (serialized.Count == 0)
                     {
-                        Console.WriteLine($"Skipping {oldType} because it has no serializable fields!");
+                        if (mainConfig.Verbose)
+                            Console.WriteLine($"Skipping {oldType} because it has no serializable fields!");
                         continue;
                     }
 
@@ -561,15 +540,19 @@ namespace DumpityLibrary
                     //{
                     //    newType.Fields.Add(new FieldDefinition(f.Name, f.Attributes, f.FieldType));
                     //}
-
-                    Console.WriteLine("====================================STARTING TYPE=========================================");
-                    Console.WriteLine($"Type Name: {oldType}");
-                    foreach (var f in serialized)
+                    if (mainConfig.Verbose)
                     {
-                        Console.WriteLine($"Serializable Field: {f}");
+                        Console.WriteLine("====================================STARTING TYPE=========================================");
+                        Console.WriteLine($"Type Name: {oldType}");
+                        foreach (var f in serialized)
+                        {
+                            Console.WriteLine($"Serializable Field: {f}");
+                        }
                     }
-                    GenerateReadMethod(serialized, oldType);
-                    Console.WriteLine($"Adding type: {oldType} to the set of types");
+                    if (mainConfig.AssetsConfig.GenerateAssets)
+                        GenerateReadMethod(serialized, oldType);
+                    if (mainConfig.Verbose)
+                        Console.WriteLine($"Adding type: {oldType} to the set of types");
 
                     if (GenerateJakibakiHooks)
                     {
@@ -586,8 +569,11 @@ namespace DumpityLibrary
                     //    return;
                     //}
                 }
-                assemb.Name.Name = "Assembly-CSharp-modified";
-                assemb.Write(Path.Combine(OutDirectory, assemb.Name.Name + ".dll"));
+                if (mainConfig.AssetsConfig.GenerateAssets)
+                {
+                    assemb.Name.Name += "-dumpity";
+                    assemb.Write(Path.Combine(OutDirectory, assemb.Name.Name + ".dll"));
+                }
             }
             //Console.WriteLine($"Writing assembly: {output.MainModule.Name}");
             //var stream = new MemoryStream();

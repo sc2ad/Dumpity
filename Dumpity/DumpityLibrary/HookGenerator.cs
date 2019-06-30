@@ -88,19 +88,18 @@ namespace DumpityLibrary
             return 539060726 + EqualityComparer<string>.Default.GetHashCode(Name);
         }
     }
+    
     public class HookGenerator
     {
-        internal string FileName { get; }
-        internal string FileHeaderName { get; }
         internal List<MethodData> Methods { get; }
         internal List<StructData> Structs { get; private set; }
         private List<MethodData> Hooks { get; }
-        public HookGenerator(string fName)
+        private HookDumpConfig Config { get; }
+        public HookGenerator(HookDumpConfig config)
         {
-            FileName = fName;
-            FileHeaderName = fName.Replace(".c", ".h");
             Methods = new List<MethodData>();
             Hooks = new List<MethodData>();
+            Config = config;
         }
         public bool ValidateType(TypeDefinition def)
         {
@@ -187,7 +186,12 @@ namespace DumpityLibrary
         }
         private void WriteMainHeader(StreamWriter writer)
         {
-            writer.Write(@"#include <android/log.h>
+            writer.Write(@"
+// DUMPED VIA DUMPITY: " + Constants.Version + @"
+// Built by Sc2ad
+// With support from emulamer
+
+#include <android/log.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -201,13 +205,18 @@ namespace DumpityLibrary
 
 #include ""../beatsaber-hook/shared/inline-hook/inlineHook.h""
 #include ""../beatsaber-hook/shared/utils/utils.h""
-#include """ + FileHeaderName + @"""
+#include """ + Config.FileHeaderName + @"""
 ");
         }
 
         private void WriteHeaderHeader(StreamWriter writer)
         {
-            // Empty, for now.
+            writer.Write(@"
+// DUMPED VIA DUMPITY: " + Constants.Version + @"
+// Built by Sc2ad
+// With support from emulamer
+
+");
         }
 
         private List<StructData> GetAllStructs()
@@ -231,7 +240,7 @@ namespace DumpityLibrary
             }
             return Structs;
         }
-
+        // TODO THIS IS NULL ON GENERIC METHODS!
         private bool IsStruct(TypeDefinition d)
         {
             return d.IsValueType && d.HasFields && !d.IsArray && !IsEnum(d);
@@ -325,7 +334,7 @@ namespace DumpityLibrary
                     return;
                 }
                 writer.WriteLine("struct " + s.Name + ";");
-                b.AppendLine("typedef struct __attribute__((__packed__)) " + s.Name + " {");
+                b.AppendLine("typedef struct " + s.Name + " {");
                 // Assumes that there is always at least one field in the struct
                 if (!s.Type.IsValueType)
                 {
@@ -358,7 +367,8 @@ namespace DumpityLibrary
         {
             for (int i = 0; i < structs.Count; i++)
             {
-                WriteStruct(writer_h, structs[i]);
+                if (Config.DumpStructs)
+                    WriteStruct(writer_h, structs[i]);
             }
         }
 
@@ -426,6 +436,9 @@ namespace DumpityLibrary
                 WriteTypeToBuilder("", writer_h, m.Definition.ReturnType, b, "");
                 b.Length--; // Chop off trailing space
                 b.Replace("*", "", b.Length - 2, 2);
+                // Skip generics for now
+                if (m.Definition.ReturnType.Resolve() == null)
+                    continue;
                 if (!m.Definition.ReturnType.IsPrimitive && !IsStruct(m.Definition.ReturnType.Resolve()) && !IsEnum(m.Definition.ReturnType.Resolve()))
                 {
                     if (m.Definition.ReturnType.MetadataType != MetadataType.Void)
@@ -480,7 +493,8 @@ namespace DumpityLibrary
                     }
                 }
                 b.Append(");\n}\n\n");
-                writer.Write(b.ToString());
+                if (Config.DumpHookCreation)
+                    writer.Write(b.ToString());
                 Hooks.Add(m);
             }
         }
@@ -501,6 +515,8 @@ namespace DumpityLibrary
 
         private void WriteInstallHooks(StreamWriter writer, List<MethodData> hooks)
         {
+            if (!Config.DumpHookInstallation)
+                return;
             writer.WriteLine("__attribute__((constructor)) void lib_main() {");
             foreach (var m in hooks)
             {
@@ -513,10 +529,10 @@ namespace DumpityLibrary
 
         public void Write()
         {
-            using (StreamWriter writer = new StreamWriter(FileName))
+            using (StreamWriter writer = new StreamWriter(Config.FileName))
             {
                 WriteMainHeader(writer);
-                using (StreamWriter writer_h = new StreamWriter(FileHeaderName))
+                using (StreamWriter writer_h = new StreamWriter(Config.FileHeaderName))
                 {
                     WriteHeaderHeader(writer_h);
                     WriteStructs(writer_h, GetAllStructs());

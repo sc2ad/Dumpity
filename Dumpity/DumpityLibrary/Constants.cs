@@ -6,6 +6,7 @@ namespace DumpityLibrary
 {
     class Constants
     {
+        public const string Version = "1.0.0";
         public const string MonoBehaviourTypeName = "MonoBehaviour";
         public const string ScriptableObjectTypeName = "ScriptableObject";
         public const string AssetPtrTypeName = "Ptr";
