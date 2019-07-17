@@ -513,6 +513,8 @@ namespace DumpityLibrary
 
             foreach (var assemb in assemblies)
             {
+                if (assemb.Name.Name.EndsWith("-dumpity"))
+                    continue;
                 foreach (TypeDefinition oldType in assemb.MainModule.GetTypes())
                 {
                     //if (oldType.FullName != "HMUI.TextSegmentedControlCellNew" && oldType.FullName != "HMUI.Toggle"

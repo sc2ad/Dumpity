@@ -16,7 +16,7 @@ namespace DumpityLibrary
         {
             Offset = offset;
             Definition = def;
-            Name = (def.DeclaringType.Name + "_" + def.Name).Replace('.', '_');
+            Name = (def.DeclaringType.Name + "_" + def.Name).Replace('.', '_').Replace("`", "");
         }
     }
     class StructData
@@ -43,6 +43,7 @@ namespace DumpityLibrary
                 return Name + "*";
             }
         }
+        internal bool Predefined { get; set; }
 
         public StructData(TypeDefinition def)
         {
@@ -275,13 +276,13 @@ namespace DumpityLibrary
                 else
                 {
                     // Also includes enums
-                    if (Structs.Find(sd => sd.Name == fd.Name) == null)
+                    if (Structs.Find(sd => sd.Name == fd.Name && (sd.State == StructData.WritingState.Written || sd.State == StructData.WritingState.Writing)) == null)
                     {
                         // There is no matching struct with this name
                         //Console.WriteLine("Recurse WriteStruct... Adding and writing struct: " + fd.Name);
                         if (ValidateType(fd))
                         {
-                            WriteStruct(writer_h, AddStruct(fd));
+                            WriteStruct(writer_h, AddStruct(fd), GetTypeName(fd).Contains("*"));
                         }
                     }
                     var matchName = Structs.Find(sd => sd.Name == fd.Name);
@@ -303,12 +304,12 @@ namespace DumpityLibrary
             }
         }
 
-        private void WriteStruct(StreamWriter writer, StructData s)
+        private bool WriteStruct(StreamWriter writer, StructData s, bool predefineOnly = false)
         {
             if (Structs.Find(sd => sd.Name == s.Name && sd.State == StructData.WritingState.Written) != null)
             {
                 // Already wrote this struct.
-                return;
+                return false;
             }
             s.State = StructData.WritingState.Writing;
             StringBuilder b = new StringBuilder();
@@ -320,7 +321,7 @@ namespace DumpityLibrary
                 foreach (var f in s.Fields)
                 {
                     // Specially named to avoid enum conflicts (because global namespace)
-                    b.AppendLine("\t" + s.Name + "_" + f.Name + ",");
+                    b.AppendLine("\t" + s.Name + "_" + f.Name + " = " + f.Constant + ",");
                 }
                 b.Length -= 3;
                 b.AppendLine("\n};");
@@ -331,14 +332,21 @@ namespace DumpityLibrary
                 if (s.Fields == null || s.Fields.Count == 0)
                 {
                     Structs.Remove(s);
-                    return;
+                    return false;
                 }
-                writer.WriteLine("struct " + s.Name + ";");
+                if (!s.Predefined)
+                {
+                    writer.WriteLine("struct " + s.Name + ";");
+                    s.Predefined = true;
+                }
+                if (predefineOnly)
+                    return true;
                 b.AppendLine("typedef struct " + s.Name + " {");
                 // Assumes that there is always at least one field in the struct
                 if (!s.Type.IsValueType)
                 {
-                    b.AppendLine("\tchar _unused_data_useless[" + GetFieldOffset(s.Fields.First()) + "];\n");
+                    if (GetFieldOffset(s.Fields.First()) != "0x0")
+                        b.AppendLine("\tchar _unused_data_useless[" + GetFieldOffset(s.Fields.First()) + "];\n");
                 }
                 foreach (var f in s.Fields)
                 {
@@ -361,6 +369,7 @@ namespace DumpityLibrary
             }
             
             s.State = StructData.WritingState.Written;
+            return true;
         }
 
         private void WriteStructs(StreamWriter writer_h, List<StructData> structs)
